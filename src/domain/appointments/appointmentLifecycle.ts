@@ -12,6 +12,7 @@ import type {
   ClinicIntegrationRecord,
   ExternalAppointmentRecord,
 } from './appointmentRepository.js';
+import { AppointmentStatus } from './appointmentStatus.js';
 
 export interface HoldAppointmentRequest extends HoldSlotRequest {
   clinicId: string;
@@ -88,6 +89,23 @@ export class AppointmentLifecycleService {
       return notFound('schedule_integration_not_found', 'No active schedule integration is configured for this clinic.');
     }
 
+    const existing = await this.repository.findExternalAppointmentByDedupeKey(request.clinicId, request.dedupeKey);
+
+    if (existing !== null) {
+      if (!isSameHoldPayload(existing, request)) {
+        return conflict('dedupe_key_payload_mismatch', 'The dedupe key already exists for a different appointment payload.', {
+          appointment_id: existing.id,
+          status: existing.status,
+          dedupe_key: existing.dedupeKey,
+        });
+      }
+
+      return {
+        ok: true,
+        data: toHoldResponse(existing),
+      };
+    }
+
     const appointment = await this.repository.upsertHeldExternalAppointment({
       clinicId: request.clinicId,
       contactId: request.contactId,
@@ -118,7 +136,7 @@ export class AppointmentLifecycleService {
       return notFound('appointment_not_found', 'No appointment hold exists for this dedupe key.');
     }
 
-    if (appointment.status === 'booked_pending_admin_confirmation') {
+    if (appointment.status === AppointmentStatus.BookedPendingAdminConfirmation) {
       return {
         ok: true,
         data: toConfirmResponse(appointment),
@@ -172,12 +190,20 @@ export class AppointmentLifecycleService {
   }
 }
 
+type ScheduleAdapterBuilder = (integration: ClinicIntegrationRecord) => ScheduleAdapter;
+
+const scheduleAdapterRegistry: Record<string, ScheduleAdapterBuilder> = {
+  google_sheets: (integration) => new GoogleSheetsScheduleAdapter(parseGoogleSheetsConfig(integration.config)),
+};
+
 export function createScheduleAdapter(integration: ClinicIntegrationRecord): ScheduleAdapter {
-  if (integration.provider === 'google_sheets') {
-    return new GoogleSheetsScheduleAdapter(parseGoogleSheetsConfig(integration.config));
+  const builder = scheduleAdapterRegistry[integration.provider];
+
+  if (builder === undefined) {
+    throw new Error(`Unsupported schedule integration provider: ${integration.provider}`);
   }
 
-  throw new Error(`Unsupported schedule integration provider: ${integration.provider}`);
+  return builder(integration);
 }
 
 function parseGoogleSheetsConfig(config: Record<string, unknown>): GoogleSheetsScheduleConfig {
@@ -260,6 +286,40 @@ function getProviderMetadata(appointment: ExternalAppointmentRecord): Record<str
     cell_range: appointment.cellRange,
     sheet_name: appointment.sheetName,
     external_record_id: appointment.externalRecordId,
+  };
+}
+
+function isSameHoldPayload(existing: ExternalAppointmentRecord, request: HoldAppointmentRequest): boolean {
+  return existing.startAt === request.slot.startAt
+    && existing.endAt === request.slot.endAt
+    && normalizeNullable(existing.service) === normalizeNullable(request.service)
+    && normalizeNullable(existing.patientName) === normalizeNullable(request.patientName)
+    && normalizeNullable(existing.cellRange) === normalizeNullable(readStringMetadata(request.slot.metadata, 'cell_range'))
+    && normalizeNullable(existing.sheetName) === normalizeNullable(readStringMetadata(request.slot.metadata, 'sheet_name'));
+}
+
+function readStringMetadata(metadata: Record<string, unknown>, key: string): string | undefined {
+  const value = metadata[key];
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+function normalizeNullable(value: string | null | undefined): string | undefined {
+  return value ?? undefined;
+}
+
+function conflict(
+  code: string,
+  message: string,
+  details: Record<string, unknown>,
+): AppointmentLifecycleResult<never> {
+  return {
+    ok: false,
+    error: {
+      code,
+      message,
+      statusCode: 409,
+      details,
+    },
   };
 }
 

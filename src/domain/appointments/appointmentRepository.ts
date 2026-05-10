@@ -1,4 +1,5 @@
 import type { ScheduleSlot } from '../../adapters/schedule/ScheduleAdapter.js';
+import { AppointmentStatus } from './appointmentStatus.js';
 
 export interface ClinicIntegrationRecord {
   id: string;
@@ -73,7 +74,6 @@ export class PgAppointmentRepository implements AppointmentRepository {
        from core.clinic_integrations
        where clinic_id = $1
          and is_active = true
-         and provider in ('google_sheets')
        order by created_at asc
        limit 1`,
       [clinicId],
@@ -102,7 +102,7 @@ export class PgAppointmentRepository implements AppointmentRepository {
          dedupe_key,
          meta
        )
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'held', $14, $15::jsonb)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16::jsonb)
        on conflict (clinic_id, dedupe_key) do update
        set updated_at = now()
        returning *`,
@@ -120,6 +120,7 @@ export class PgAppointmentRepository implements AppointmentRepository {
         input.patientName ?? null,
         input.slot.startAt,
         input.slot.endAt,
+        AppointmentStatus.Held,
         input.dedupeKey,
         JSON.stringify(input.meta ?? {}),
       ],
@@ -147,12 +148,12 @@ export class PgAppointmentRepository implements AppointmentRepository {
   async markExternalWriteFailed(appointmentId: string, reason: string): Promise<ExternalAppointmentRecord> {
     const result = await this.db.query<ExternalAppointmentRow>(
       `update core.external_appointments
-       set status = 'failed_external_write',
+       set status = $3,
            meta = meta || $2::jsonb,
            updated_at = now()
        where id = $1
        returning *`,
-      [appointmentId, JSON.stringify({ external_write_error: reason })],
+      [appointmentId, JSON.stringify({ external_write_error: reason }), AppointmentStatus.FailedExternalWrite],
     );
 
     return mapExternalAppointment(result.rows[0]);
@@ -163,7 +164,7 @@ export class PgAppointmentRepository implements AppointmentRepository {
   ): Promise<ExternalAppointmentRecord> {
     const result = await this.db.query<ExternalAppointmentRow>(
       `update core.external_appointments
-       set status = 'booked_pending_admin_confirmation',
+       set status = $4,
            external_record_id = coalesce($2, external_record_id),
            last_sync_at = now(),
            meta = meta || $3::jsonb,
@@ -174,6 +175,7 @@ export class PgAppointmentRepository implements AppointmentRepository {
         input.appointmentId,
         input.externalRecordId ?? null,
         JSON.stringify({ provider_metadata: input.providerMetadata ?? {} }),
+        AppointmentStatus.BookedPendingAdminConfirmation,
       ],
     );
 

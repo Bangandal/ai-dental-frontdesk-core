@@ -19,7 +19,10 @@ create table if not exists core.cases (
   last_activity_at timestamptz not null default now(),
   meta jsonb not null default '{}'::jsonb,
   created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
+  updated_at timestamptz not null default now(),
+  constraint cases_status_check check (
+    status in ('open', 'appointment_booked_pending_admin_confirmation', 'handed_off', 'closed')
+  )
 );
 
 create index if not exists cases_clinic_id_idx

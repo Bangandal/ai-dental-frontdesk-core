@@ -35,6 +35,59 @@ const slot = {
 };
 
 describe('appointment lifecycle routes', () => {
+  it('returns a structured validation error for invalid availability payloads', async () => {
+    const app = Fastify();
+    const appointmentLifecycle = new AppointmentLifecycleService({
+      repository: new InMemoryAppointmentRepository(),
+      scheduleAdapterFactory: () => new MockScheduleAdapter(),
+    });
+
+    await app.register(registerAvailabilityRoutes, { appointmentLifecycle });
+
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/availability/check',
+        payload: { clinicId: 'not-a-uuid' },
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toMatchObject({ error: { code: 'validation_failed' } });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('returns a structured validation error for invalid appointment payloads', async () => {
+    const app = Fastify();
+    const appointmentLifecycle = new AppointmentLifecycleService({
+      repository: new InMemoryAppointmentRepository(),
+      scheduleAdapterFactory: () => new MockScheduleAdapter(),
+    });
+
+    await app.register(registerAppointmentRoutes, { appointmentLifecycle });
+
+    try {
+      const holdResponse = await app.inject({
+        method: 'POST',
+        url: '/appointments/hold',
+        payload: { clinicId, dedupeKey: '' },
+      });
+      const confirmResponse = await app.inject({
+        method: 'POST',
+        url: '/appointments/confirm',
+        payload: { clinicId, dedupeKey: '' },
+      });
+
+      expect(holdResponse.statusCode).toBe(400);
+      expect(confirmResponse.statusCode).toBe(400);
+      expect(holdResponse.json()).toMatchObject({ error: { code: 'validation_failed' } });
+      expect(confirmResponse.json()).toMatchObject({ error: { code: 'validation_failed' } });
+    } finally {
+      await app.close();
+    }
+  });
+
   it('checks availability through the active schedule adapter', async () => {
     const repository = new InMemoryAppointmentRepository();
     const adapter = new MockScheduleAdapter();
@@ -92,6 +145,43 @@ describe('appointment lifecycle routes', () => {
       expect(repository.appointments).toHaveLength(1);
       expect(repository.appointments[0]?.status).toBe('held');
       expect(adapter.confirmCalls).toBe(0);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('returns conflict when dedupeKey is reused with a different payload', async () => {
+    const repository = new InMemoryAppointmentRepository();
+    const app = Fastify();
+    const appointmentLifecycle = new AppointmentLifecycleService({
+      repository,
+      scheduleAdapterFactory: () => new MockScheduleAdapter(),
+    });
+
+    await app.register(registerAppointmentRoutes, { appointmentLifecycle });
+
+    try {
+      const first = await app.inject({
+        method: 'POST',
+        url: '/appointments/hold',
+        payload: { clinicId, contactId, dedupeKey: 'hold-conflict', slot, patientName: 'Jane Patient' },
+      });
+      const conflict = await app.inject({
+        method: 'POST',
+        url: '/appointments/hold',
+        payload: {
+          clinicId,
+          contactId,
+          dedupeKey: 'hold-conflict',
+          slot: { ...slot, startAt: '2026-05-11T16:00:00.000Z', endAt: '2026-05-11T16:15:00.000Z' },
+          patientName: 'Jane Patient',
+        },
+      });
+
+      expect(first.statusCode).toBe(200);
+      expect(conflict.statusCode).toBe(409);
+      expect(conflict.json()).toMatchObject({ error: { code: 'dedupe_key_payload_mismatch' } });
+      expect(repository.appointments).toHaveLength(1);
     } finally {
       await app.close();
     }

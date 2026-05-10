@@ -26,6 +26,17 @@ create table if not exists core.external_appointments (
   meta jsonb not null default '{}'::jsonb,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
+  constraint external_appointments_status_check check (
+    status in (
+      'proposed',
+      'held',
+      'booked_pending_admin_confirmation',
+      'failed_external_write',
+      'canceled',
+      'expired',
+      'admin_confirmed'
+    )
+  ),
   constraint external_appointments_clinic_dedupe_key_key unique (clinic_id, dedupe_key)
 );
 

@@ -1,3 +1,5 @@
+import { CaseStatus } from './caseStatus.js';
+
 export interface CaseRecord {
   id: string;
   clinicId: string;
@@ -62,10 +64,10 @@ export class PgCaseRepository implements CaseRepository {
        from core.cases
        where clinic_id = $1
          and contact_id = $2
-         and status in ('open', 'appointment_booked_pending_admin_confirmation', 'handed_off')
+         and status = any($3)
        order by last_activity_at desc, created_at desc
        limit 10`,
-      [clinicId, contactId],
+      [clinicId, contactId, [CaseStatus.Open, CaseStatus.AppointmentBookedPendingAdminConfirmation, CaseStatus.HandedOff]],
     );
 
     return result.rows.map(mapCaseRow);
@@ -86,7 +88,7 @@ export class PgCaseRepository implements CaseRepository {
          source_channel,
          meta
        )
-       values ($1, $2, $3, $4, $5, coalesce($6, 'open'), $7, $8, $9::jsonb, $10, $11::jsonb)
+       values ($1, $2, $3, $4, $5, coalesce($6, $12), $7, $8, $9::jsonb, $10, $11::jsonb)
        returning *`,
       [
         input.clinicId,
@@ -100,6 +102,7 @@ export class PgCaseRepository implements CaseRepository {
         JSON.stringify(input.collected ?? {}),
         input.sourceChannel ?? null,
         JSON.stringify(input.meta ?? {}),
+        CaseStatus.Open,
       ],
     );
 

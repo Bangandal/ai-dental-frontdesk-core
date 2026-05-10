@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 
+import type { CaseRepository } from '../../domain/cases/caseRepository.js';
 import { PgCaseRepository } from '../../domain/cases/caseRepository.js';
 import { resolveCase } from '../../domain/cases/resolveCase.js';
 
@@ -14,7 +15,14 @@ const resolveCaseSchema = z.object({
   current_text: z.string().optional(),
 });
 
-export async function registerCaseRoutes(app: FastifyInstance): Promise<void> {
+export interface CaseRoutesOptions {
+  caseRepository?: CaseRepository;
+}
+
+export async function registerCaseRoutes(
+  app: FastifyInstance,
+  options: CaseRoutesOptions = {},
+): Promise<void> {
   app.post('/cases/resolve', async (request: FastifyRequest, reply: FastifyReply) => {
     const parsed = resolveCaseSchema.safeParse(request.body);
 
@@ -29,8 +37,8 @@ export async function registerCaseRoutes(app: FastifyInstance): Promise<void> {
     }
 
     try {
-      const { pool } = await import('../../db/pool.js');
-      const result = await resolveCase(parsed.data, new PgCaseRepository(pool));
+      const repository = options.caseRepository ?? await createDefaultCaseRepository();
+      const result = await resolveCase(parsed.data, repository);
       return reply.send(result);
     } catch {
       return reply.code(500).send({
@@ -41,6 +49,11 @@ export async function registerCaseRoutes(app: FastifyInstance): Promise<void> {
       });
     }
   });
+}
+
+async function createDefaultCaseRepository(): Promise<CaseRepository> {
+  const { pool } = await import('../../db/pool.js');
+  return new PgCaseRepository(pool);
 }
 
 export const caseRouteSchemas = {

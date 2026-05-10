@@ -1,6 +1,5 @@
 import type { CaseRecord, CaseRepository } from './caseRepository.js';
-
-const BOOKED_PENDING_ADMIN_STATUS = 'appointment_booked_pending_admin_confirmation';
+import { CaseStatus } from './caseStatus.js';
 
 export interface ResolveCaseInput {
   clinic_id: string;
@@ -36,7 +35,7 @@ export async function resolveCase(
   if (isAppointmentConfirmation(input) && latestCase !== undefined) {
     const updated = await repository.updateCase({
       caseId: latestCase.id,
-      status: BOOKED_PENDING_ADMIN_STATUS,
+      status: CaseStatus.AppointmentBookedPendingAdminConfirmation,
       currentStage: 'admin_confirmation_pending',
       collected: collectStructuredUpdates(input),
       meta: { last_case_resolution: 'appointment_confirmed' },
@@ -104,8 +103,8 @@ function isPostHandoffAcknowledgement(input: ResolveCaseInput): boolean {
 }
 
 function isBookedOrHandedOff(caseRecord: CaseRecord): boolean {
-  return [BOOKED_PENDING_ADMIN_STATUS, 'booked_pending_admin_confirmation', 'handed_off'].includes(caseRecord.status)
-    || ['admin_confirmation_pending', 'handed_off'].includes(caseRecord.currentStage ?? '');
+  return [CaseStatus.AppointmentBookedPendingAdminConfirmation, 'booked_pending_admin_confirmation', CaseStatus.HandedOff].includes(caseRecord.status)
+    || ['admin_confirmation_pending', CaseStatus.HandedOff].includes(caseRecord.currentStage ?? '');
 }
 
 function isDifferentServiceQuestion(input: ResolveCaseInput, caseRecord: CaseRecord): boolean {
@@ -134,7 +133,7 @@ async function createResolvedCase(
     contactId: input.contact_id,
     caseType: options.caseType,
     topic: inferTopic(input),
-    status: 'open',
+    status: CaseStatus.Open,
     currentStage: inferCurrentStage(input),
     collected: collectStructuredUpdates(input),
     meta: {
