@@ -118,6 +118,7 @@ export class AppointmentLifecycleService {
       slot: request.slot,
       meta: {
         provider_metadata: request.slot.metadata,
+        slot: request.slot,
       },
     });
 
@@ -173,6 +174,7 @@ export class AppointmentLifecycleService {
         externalRecordId: externalWrite.appointmentId,
         providerMetadata: {
           ...request.slot.metadata,
+          ...externalWrite.providerMetadata,
           external_appointment_id: externalWrite.appointmentId,
         },
       });
@@ -216,6 +218,10 @@ function parseGoogleSheetsConfig(config: Record<string, unknown>): GoogleSheetsS
   const enabledScheduleDays = readStringArray(config, 'enabledScheduleDays');
   const defaultDoctorId = readString(config, 'defaultDoctorId');
   const adminConfirmationRequired = readBoolean(config, 'adminConfirmationRequired');
+  const spreadsheetId = readOptionalString(config, 'spreadsheetId') ?? '';
+  const readRange = readOptionalString(config, 'readRange') ?? '';
+  const writeMode = readWriteMode(config, 'writeMode');
+  const serviceAccountJsonEnvVar = readOptionalString(config, 'serviceAccountJsonEnvVar');
 
   return {
     timeColumn,
@@ -226,6 +232,10 @@ function parseGoogleSheetsConfig(config: Record<string, unknown>): GoogleSheetsS
     enabledScheduleDays,
     defaultDoctorId,
     adminConfirmationRequired,
+    spreadsheetId,
+    readRange,
+    writeMode,
+    ...(serviceAccountJsonEnvVar === undefined ? {} : { serviceAccountJsonEnvVar }),
     ...(sheetName === undefined ? {} : { sheetName }),
   };
 }
@@ -254,6 +264,19 @@ function readOptionalString(config: Record<string, unknown>, key: string): strin
   return value;
 }
 
+function readWriteMode(config: Record<string, unknown>, key: string): 'cell' | 'append' {
+  const value = config[key];
+
+  if (value === undefined) {
+    return 'cell';
+  }
+
+  if (value !== 'cell' && value !== 'append') {
+    throw new Error(`Google Sheets schedule config field must be cell or append: ${key}`);
+  }
+
+  return value;
+}
 
 function readStringArray(config: Record<string, unknown>, key: string): string[] {
   const value = config[key];

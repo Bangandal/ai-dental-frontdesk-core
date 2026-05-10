@@ -358,6 +358,21 @@ class InMemoryAppointmentRepository implements AppointmentRepository {
     )) ?? null;
   }
 
+  async findLatestHeldAppointmentForContactOrCase(
+    requestClinicId: string,
+    requestContactId: string,
+    requestCaseId?: string | null,
+  ): Promise<ExternalAppointmentRecord | null> {
+    return [...this.appointments].reverse().find((appointment) => (
+      appointment.clinicId === requestClinicId
+      && appointment.status === 'held'
+      && (
+        appointment.contactId === requestContactId
+        || (requestCaseId !== null && requestCaseId !== undefined && appointment.caseId === requestCaseId)
+      )
+    )) ?? null;
+  }
+
   async markExternalWriteFailed(appointmentId: string, reason: string): Promise<ExternalAppointmentRecord> {
     const appointment = this.getAppointment(appointmentId);
     appointment.status = 'failed_external_write';
