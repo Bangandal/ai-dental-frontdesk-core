@@ -213,6 +213,9 @@ function parseGoogleSheetsConfig(config: Record<string, unknown>): GoogleSheetsS
   const timezone = readString(config, 'timezone');
   const slotMinutes = readNumber(config, 'slotMinutes');
   const sheetName = readOptionalString(config, 'sheetName');
+  const enabledScheduleDays = readStringArray(config, 'enabledScheduleDays');
+  const defaultDoctorId = readString(config, 'defaultDoctorId');
+  const adminConfirmationRequired = readBoolean(config, 'adminConfirmationRequired');
 
   return {
     timeColumn,
@@ -220,6 +223,9 @@ function parseGoogleSheetsConfig(config: Record<string, unknown>): GoogleSheetsS
     firstTimeRow,
     timezone,
     slotMinutes,
+    enabledScheduleDays,
+    defaultDoctorId,
+    adminConfirmationRequired,
     ...(sheetName === undefined ? {} : { sheetName }),
   };
 }
@@ -243,6 +249,27 @@ function readOptionalString(config: Record<string, unknown>, key: string): strin
 
   if (typeof value !== 'string' || value.length === 0) {
     throw new Error(`Google Sheets schedule config field must be a string: ${key}`);
+  }
+
+  return value;
+}
+
+
+function readStringArray(config: Record<string, unknown>, key: string): string[] {
+  const value = config[key];
+
+  if (!Array.isArray(value) || value.length === 0 || value.some((entry) => typeof entry !== 'string' || entry.length === 0)) {
+    throw new Error(`Google Sheets schedule config is missing string array field: ${key}`);
+  }
+
+  return value;
+}
+
+function readBoolean(config: Record<string, unknown>, key: string): boolean {
+  const value = config[key];
+
+  if (typeof value !== 'boolean') {
+    throw new Error(`Google Sheets schedule config is missing boolean field: ${key}`);
   }
 
   return value;

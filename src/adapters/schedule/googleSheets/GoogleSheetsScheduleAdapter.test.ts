@@ -1,15 +1,18 @@
 import { describe, expect, it } from 'vitest';
 
 import { GoogleSheetsScheduleAdapter } from './GoogleSheetsScheduleAdapter.js';
-import { columnNameToIndex, parseScheduleGrid, type ScheduleGrid } from './parseScheduleGrid.js';
+import { columnNameToIndex, parseScheduleGrid, type GoogleSheetsScheduleConfig, type ScheduleGrid } from './parseScheduleGrid.js';
 
-const config = {
+const config: GoogleSheetsScheduleConfig = {
   timeColumn: 'B',
   dateHeaderRow: 1,
   firstTimeRow: 2,
   timezone: 'America/New_York',
   slotMinutes: 15,
   sheetName: 'Schedule',
+  enabledScheduleDays: ['monday', 'saturday'],
+  defaultDoctorId: 'dr_primary',
+  adminConfirmationRequired: true,
 };
 
 function buildMockGrid(): ScheduleGrid {
@@ -17,9 +20,9 @@ function buildMockGrid(): ScheduleGrid {
   const timeColumn = columnNameToIndex('B');
   const dateColumns = ['AM', 'AN', 'AO'].map(columnNameToIndex);
 
-  grid[0][dateColumns[0]] = '2026-05-11';
-  grid[0][dateColumns[1]] = '2026-05-12';
-  grid[0][dateColumns[2]] = '2026-05-13';
+  grid[0][dateColumns[0]] = '2026-05-11'; // Monday
+  grid[0][dateColumns[1]] = '2026-05-12'; // Tuesday
+  grid[0][dateColumns[2]] = '2026-05-16'; // Saturday
 
   for (let row = 1; row < grid.length; row += 1) {
     const minutesAfterEleven = (row - 1) * 15;
@@ -36,7 +39,7 @@ function buildMockGrid(): ScheduleGrid {
 }
 
 describe('GoogleSheetsScheduleAdapter', () => {
-  it('returns empty cells as available slots with cell range metadata', async () => {
+  it('returns Monday slots when Monday is enabled in config', async () => {
     const adapter = new GoogleSheetsScheduleAdapter({ config, grid: buildMockGrid() });
 
     const response = await adapter.getAvailableSlots({
@@ -44,6 +47,7 @@ describe('GoogleSheetsScheduleAdapter', () => {
       to: '2026-05-12T00:00:00.000Z',
     });
 
+    expect(response.warnings).toEqual([]);
     expect(response.slots).toHaveLength(10);
     expect(response.slots.map((slot) => slot.metadata.cell_range)).toEqual([
       'AM3',
@@ -63,6 +67,117 @@ describe('GoogleSheetsScheduleAdapter', () => {
       timezone: 'America/New_York',
       provider: 'google_sheets',
     });
+  });
+
+  it('returns Saturday slots when Saturday is enabled in config', async () => {
+    const adapter = new GoogleSheetsScheduleAdapter({ config, grid: buildMockGrid() });
+
+    const response = await adapter.getAvailableSlots({
+      from: '2026-05-16T00:00:00.000Z',
+      to: '2026-05-17T00:00:00.000Z',
+    });
+
+    expect(response.warnings).toEqual([]);
+    expect(response.slots).toHaveLength(13);
+    expect(response.slots[0]?.metadata.cell_range).toBe('AO2');
+    expect(response.slots.at(-1)?.metadata.cell_range).toBe('AO14');
+  });
+
+  it('ignores Tuesday slots when Tuesday is disabled in config', async () => {
+    const adapter = new GoogleSheetsScheduleAdapter({ config, grid: buildMockGrid() });
+
+    const response = await adapter.getAvailableSlots({
+      from: '2026-05-11T00:00:00.000Z',
+      to: '2026-05-17T00:00:00.000Z',
+    });
+
+    expect(response.slots.map((slot) => slot.metadata.column_name)).toEqual([
+      'AM',
+      'AM',
+      'AM',
+      'AM',
+      'AM',
+      'AM',
+      'AM',
+      'AM',
+      'AM',
+      'AM',
+      'AO',
+      'AO',
+      'AO',
+      'AO',
+      'AO',
+      'AO',
+      'AO',
+      'AO',
+      'AO',
+      'AO',
+      'AO',
+      'AO',
+      'AO',
+    ]);
+    expect(response.slots).not.toContainEqual(expect.objectContaining({
+      metadata: expect.objectContaining({ column_name: 'AN' }),
+    }));
+  });
+
+  it('returns requested_day_not_enabled warning when the request only targets Tuesday', async () => {
+    const adapter = new GoogleSheetsScheduleAdapter({ config, grid: buildMockGrid() });
+
+    const response = await adapter.getAvailableSlots({
+      from: '2026-05-12T00:00:00.000Z',
+      to: '2026-05-13T00:00:00.000Z',
+    });
+
+    expect(response.slots).toEqual([]);
+    expect(response.warnings).toEqual([expect.objectContaining({
+      code: 'requested_day_not_enabled',
+      details: expect.objectContaining({
+        requested_disabled_days: ['tuesday'],
+        enabled_schedule_days: ['monday', 'saturday'],
+      }),
+    })]);
+  });
+
+  it('attaches the same doctor metadata to Monday and Saturday slots', async () => {
+    const adapter = new GoogleSheetsScheduleAdapter({ config, grid: buildMockGrid() });
+
+    const response = await adapter.getAvailableSlots({
+      from: '2026-05-11T00:00:00.000Z',
+      to: '2026-05-17T00:00:00.000Z',
+    });
+
+    const mondaySlot = response.slots.find((slot) => slot.metadata.column_name === 'AM');
+    const saturdaySlot = response.slots.find((slot) => slot.metadata.column_name === 'AO');
+
+    expect(mondaySlot?.metadata).toMatchObject({
+      doctor_id: 'dr_primary',
+      admin_confirmation_required: true,
+    });
+    expect(saturdaySlot?.metadata).toMatchObject({
+      doctor_id: 'dr_primary',
+      admin_confirmation_required: true,
+    });
+  });
+
+  it('makes Tuesday available when Tuesday is added to enabledScheduleDays config', async () => {
+    const adapter = new GoogleSheetsScheduleAdapter({
+      config: {
+        ...config,
+        enabledScheduleDays: ['monday', 'tuesday', 'saturday'],
+      },
+      grid: buildMockGrid(),
+    });
+
+    const response = await adapter.getAvailableSlots({
+      from: '2026-05-12T00:00:00.000Z',
+      to: '2026-05-13T00:00:00.000Z',
+    });
+
+    expect(response.warnings).toEqual([]);
+    expect(response.slots).toHaveLength(13);
+    expect(response.slots[0]?.metadata.cell_range).toBe('AN2');
+    expect(response.slots.at(-1)?.metadata.cell_range).toBe('AN14');
   });
 
   it('parses occupied cells as unavailable', () => {

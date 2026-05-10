@@ -8,7 +8,7 @@ import type {
   HoldSlotResponse,
   ScheduleAdapter,
 } from '../ScheduleAdapter.js';
-import { findAvailableSlots } from './findAvailableSlots.js';
+import { findAvailableSlotsWithWarnings } from './findAvailableSlots.js';
 import type { GoogleSheetsScheduleConfig, ScheduleGrid } from './parseScheduleGrid.js';
 
 export interface GoogleSheetsScheduleAdapterOptions {
@@ -35,9 +35,7 @@ export class GoogleSheetsScheduleAdapter implements ScheduleAdapter {
     const requestGrid = request.providerMetadata?.grid;
     const grid = isScheduleGrid(requestGrid) ? requestGrid : this.grid;
 
-    return {
-      slots: findAvailableSlots(grid, this.config, request),
-    };
+    return findAvailableSlotsWithWarnings(grid, this.config, request);
   }
 
   async holdSlot(_request: HoldSlotRequest): Promise<HoldSlotResponse> {

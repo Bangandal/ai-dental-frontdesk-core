@@ -6,6 +6,9 @@ export interface GoogleSheetsScheduleConfig {
   firstTimeRow: number;
   timezone: string;
   slotMinutes: number;
+  enabledScheduleDays: readonly string[];
+  defaultDoctorId: string;
+  adminConfirmationRequired: boolean;
   sheetName?: string;
 }
 
