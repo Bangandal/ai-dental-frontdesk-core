@@ -39,6 +39,7 @@ export function findAvailableSlotsWithWarnings(
   return {
     slots: enabledCells
       .filter((cell) => cell.isAvailable)
+      .sort(compareScheduleCellsChronologically)
       .map((cell) => ({
         startAt: cell.startAt,
         endAt: cell.endAt,
@@ -86,6 +87,10 @@ function buildWarnings(
       enabled_schedule_days: [...enabledScheduleDays].map(weekdayIndexToName),
     },
   }];
+}
+
+function compareScheduleCellsChronologically(left: ParsedScheduleCell, right: ParsedScheduleCell): number {
+  return new Date(left.startAt).getTime() - new Date(right.startAt).getTime();
 }
 
 function isCellOnEnabledDay(cell: ParsedScheduleCell, enabledScheduleDays: ReadonlySet<number>): boolean {
