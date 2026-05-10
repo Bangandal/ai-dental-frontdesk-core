@@ -18,8 +18,15 @@ export interface CheckAvailabilityRequest {
   providerMetadata?: Record<string, unknown>;
 }
 
+export interface AvailabilityWarning {
+  code: string;
+  message: string;
+  details?: Record<string, unknown>;
+}
+
 export interface CheckAvailabilityResponse {
   slots: ScheduleSlot[];
+  warnings?: AvailabilityWarning[];
 }
 
 export interface HoldSlotRequest {

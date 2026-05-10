@@ -310,6 +310,9 @@ class InMemoryAppointmentRepository implements AppointmentRepository {
       firstTimeRow: 2,
       timezone: 'America/New_York',
       slotMinutes: 15,
+      enabledScheduleDays: ['monday', 'saturday'],
+      defaultDoctorId: 'dr_primary',
+      adminConfirmationRequired: true,
     },
   };
 
