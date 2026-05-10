@@ -118,6 +118,7 @@ export class AppointmentLifecycleService {
       slot: request.slot,
       meta: {
         provider_metadata: request.slot.metadata,
+        slot: request.slot,
       },
     });
 

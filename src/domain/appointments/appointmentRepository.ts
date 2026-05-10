@@ -54,6 +54,11 @@ export interface AppointmentRepository {
   getActiveScheduleIntegration(clinicId: string): Promise<ClinicIntegrationRecord | null>;
   upsertHeldExternalAppointment(input: HoldExternalAppointmentInput): Promise<ExternalAppointmentRecord>;
   findExternalAppointmentByDedupeKey(clinicId: string, dedupeKey: string): Promise<ExternalAppointmentRecord | null>;
+  findLatestHeldAppointmentForContactOrCase(
+    clinicId: string,
+    contactId: string,
+    caseId?: string | null,
+  ): Promise<ExternalAppointmentRecord | null>;
   markExternalWriteFailed(appointmentId: string, reason: string): Promise<ExternalAppointmentRecord>;
   markBookedPendingAdminConfirmation(input: ConfirmExternalAppointmentInput): Promise<ExternalAppointmentRecord>;
 }
@@ -140,6 +145,28 @@ export class PgAppointmentRepository implements AppointmentRepository {
          and dedupe_key = $2
        limit 1`,
       [clinicId, dedupeKey],
+    );
+
+    return result.rows[0] === undefined ? null : mapExternalAppointment(result.rows[0]);
+  }
+
+  async findLatestHeldAppointmentForContactOrCase(
+    clinicId: string,
+    contactId: string,
+    caseId?: string | null,
+  ): Promise<ExternalAppointmentRecord | null> {
+    const result = await this.db.query<ExternalAppointmentRow>(
+      `select *
+       from core.external_appointments
+       where clinic_id = $1
+         and status = $3
+         and (
+           contact_id = $2
+           or ($4::uuid is not null and case_id = $4::uuid)
+         )
+       order by created_at desc
+       limit 1`,
+      [clinicId, contactId, AppointmentStatus.Held, caseId ?? null],
     );
 
     return result.rows[0] === undefined ? null : mapExternalAppointment(result.rows[0]);
