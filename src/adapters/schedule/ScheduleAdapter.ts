@@ -58,6 +58,7 @@ export interface ConfirmAppointmentRequest {
 export interface ConfirmAppointmentResponse {
   ok: boolean;
   appointmentId?: string;
+  providerMetadata?: Record<string, unknown>;
   reason?: string;
 }
 
