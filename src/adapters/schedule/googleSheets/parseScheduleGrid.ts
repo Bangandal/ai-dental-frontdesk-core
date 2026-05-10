@@ -135,6 +135,11 @@ function parseDateHeader(value: unknown): string | undefined {
     return formatDateParts(Number(isoMatch[1]), Number(isoMatch[2]), Number(isoMatch[3]));
   }
 
+  const europeanDotMatch = /^(\d{1,2})\.(\d{1,2})\.(\d{4})$/.exec(raw);
+  if (europeanDotMatch) {
+    return formatDateParts(Number(europeanDotMatch[3]), Number(europeanDotMatch[2]), Number(europeanDotMatch[1]));
+  }
+
   const slashMatch = /^(\d{1,2})\/(\d{1,2})(?:\/(\d{2}|\d{4}))?$/.exec(raw);
   if (slashMatch) {
     const now = new Date();
@@ -169,7 +174,7 @@ function parseTimeCell(value: unknown): string | undefined {
     return undefined;
   }
 
-  const match = /^(\d{1,2})(?::(\d{2}))?\s*([ap]m)?$/i.exec(raw);
+  const match = /^(\d{1,2})(?:[:.](\d{2}))?\s*([ap]m)?$/i.exec(raw);
   if (!match) {
     return undefined;
   }

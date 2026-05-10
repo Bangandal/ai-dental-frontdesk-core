@@ -41,6 +41,35 @@ function buildMockGrid(): ScheduleGrid {
   return grid;
 }
 
+const realClinicConfig: GoogleSheetsScheduleConfig = {
+  ...config,
+  sheetName: 'Графік',
+  dateHeaderRow: 3,
+  firstTimeRow: 4,
+  timezone: 'Europe/Kyiv',
+  readRange: 'A1:AP20',
+};
+
+function buildRealClinicGrid(): ScheduleGrid {
+  const grid: string[][] = Array.from({ length: 8 }, () => Array.from({ length: 42 }, () => ''));
+  const timeColumn = columnNameToIndex('B');
+  const dateColumns = ['AM', 'AN', 'AO'].map(columnNameToIndex);
+  const times = ['07.00', '07.15', '07.30', '07.45', '08.00'];
+
+  grid[1][dateColumns[0]] = 'сб';
+  grid[1][dateColumns[1]] = 'пн';
+  grid[1][dateColumns[2]] = 'сб';
+  grid[2][dateColumns[0]] = '04.10.2025';
+  grid[2][dateColumns[1]] = '06.10.2025';
+  grid[2][dateColumns[2]] = '11.10.2025';
+
+  times.forEach((time, index) => {
+    grid[index + 3][timeColumn] = time;
+  });
+
+  return grid;
+}
+
 describe('GoogleSheetsScheduleAdapter', () => {
   it('returns Monday slots when Monday is enabled in config', async () => {
     const adapter = new GoogleSheetsScheduleAdapter({ config, grid: buildMockGrid() });
@@ -188,6 +217,96 @@ describe('GoogleSheetsScheduleAdapter', () => {
 
     expect(occupiedCells.map((cell) => cell.cellRange)).toEqual(['AM2', 'AM4', 'AM6']);
     expect(occupiedCells.map((cell) => cell.time)).toEqual(['11:00', '11:30', '12:00']);
+  });
+
+  it('parses the real clinic sheet date and dot time format', () => {
+    const parsedCells = parseScheduleGrid(buildRealClinicGrid(), realClinicConfig);
+    const firstCell = parsedCells.find((cell) => cell.cellRange === 'AM4');
+
+    expect(firstCell).toMatchObject({
+      date: '2025-10-04',
+      time: '07:00',
+      startAt: '2025-10-04T04:00:00.000Z',
+      endAt: '2025-10-04T04:15:00.000Z',
+      sheetName: 'Графік',
+    });
+  });
+
+  it('returns 30-minute starts only when 2 consecutive cells are empty', async () => {
+    const adapter = new GoogleSheetsScheduleAdapter({ config: realClinicConfig, grid: buildRealClinicGrid() });
+
+    const response = await adapter.getAvailableSlots({
+      from: '2025-10-06T00:00:00.000Z',
+      to: '2025-10-07T00:00:00.000Z',
+      durationMinutes: 30,
+    });
+
+    expect(response.warnings).toEqual([]);
+    expect(response.slots.map((slot) => slot.metadata.cell_range)).toEqual(['AN4', 'AN5', 'AN6', 'AN7']);
+  });
+
+  it('blocks a 30-minute slot when the next 15-minute cell is occupied', async () => {
+    const grid = buildRealClinicGrid().map((row) => [...row]);
+    grid[4][columnNameToIndex('AN')] = 'occupied';
+    const adapter = new GoogleSheetsScheduleAdapter({ config: realClinicConfig, grid });
+
+    const response = await adapter.getAvailableSlots({
+      from: '2025-10-06T00:00:00.000Z',
+      to: '2025-10-07T00:00:00.000Z',
+      durationMinutes: 30,
+    });
+
+    expect(response.slots.map((slot) => slot.metadata.cell_range)).toEqual(['AN6', 'AN7']);
+  });
+
+  it('sets the returned endAt from request.durationMinutes', async () => {
+    const adapter = new GoogleSheetsScheduleAdapter({ config: realClinicConfig, grid: buildRealClinicGrid() });
+
+    const response = await adapter.getAvailableSlots({
+      from: '2025-10-06T00:00:00.000Z',
+      to: '2025-10-07T00:00:00.000Z',
+      durationMinutes: 45,
+    });
+
+    expect(response.slots[0]).toMatchObject({
+      startAt: '2025-10-06T04:00:00.000Z',
+      endAt: '2025-10-06T04:45:00.000Z',
+      metadata: expect.objectContaining({ cell_range: 'AN4' }),
+    });
+    expect(response.slots.map((slot) => slot.metadata.cell_range)).toEqual(['AN4', 'AN5', 'AN6']);
+  });
+
+  it('keeps Monday and Saturday filtering config-driven for the real clinic grid', async () => {
+    const adapter = new GoogleSheetsScheduleAdapter({ config: realClinicConfig, grid: buildRealClinicGrid() });
+
+    const response = await adapter.getAvailableSlots({
+      from: '2025-10-04T00:00:00.000Z',
+      to: '2025-10-12T00:00:00.000Z',
+    });
+
+    expect(new Set(response.slots.map((slot) => slot.metadata.column_name))).toEqual(new Set(['AM', 'AN', 'AO']));
+  });
+
+  it('ignores Tuesday columns in the real clinic format when Tuesday is not enabled', async () => {
+    const grid = buildRealClinicGrid().map((row) => [...row]);
+    const tuesdayColumn = columnNameToIndex('AP');
+    grid.forEach((row) => {
+      row[tuesdayColumn] = row[tuesdayColumn] ?? '';
+    });
+    grid[1][tuesdayColumn] = 'вт';
+    grid[2][tuesdayColumn] = '07.10.2025';
+    const adapter = new GoogleSheetsScheduleAdapter({ config: realClinicConfig, grid });
+
+    const response = await adapter.getAvailableSlots({
+      from: '2025-10-07T00:00:00.000Z',
+      to: '2025-10-08T00:00:00.000Z',
+    });
+
+    expect(response.slots).toEqual([]);
+    expect(response.warnings).toEqual([expect.objectContaining({
+      code: 'requested_day_not_enabled',
+      details: expect.objectContaining({ requested_disabled_days: ['tuesday'] }),
+    })]);
   });
 
   it('uses providerMetadata.grid without Google credentials', async () => {

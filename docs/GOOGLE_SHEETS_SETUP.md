@@ -29,14 +29,16 @@ You may use a different variable name by setting `serviceAccountJsonEnvVar` in `
 
 For the current MVP, configure the clinic's active Google Sheets schedule integration to expose only Monday and Saturday availability. Both days should use the same default doctor metadata.
 
+The current clinic sheet is a human schedule tab named `Графік`. It keeps time values in column `B`, weekday labels in row 2, actual date headers in row 3, and the first time row at row 4. The adapter reads the actual date row and ignores colors/formatting as an availability source of truth.
+
 ```json
 {
   "timeColumn": "B",
-  "dateHeaderRow": 1,
-  "firstTimeRow": 2,
-  "timezone": "America/New_York",
+  "dateHeaderRow": 3,
+  "firstTimeRow": 4,
+  "timezone": "Europe/Kyiv",
   "slotMinutes": 15,
-  "sheetName": "Schedule",
+  "sheetName": "Графік",
   "spreadsheetId": "1abcDEFghiJKLmnoPQRstuVWxyz1234567890",
   "readRange": "A1:AP200",
   "writeMode": "cell",
@@ -50,10 +52,10 @@ For the current MVP, configure the clinic's active Google Sheets schedule integr
 ## Config fields
 
 - `timeColumn`: the spreadsheet column containing appointment times.
-- `dateHeaderRow`: the 1-based row number containing date headers.
-- `firstTimeRow`: the 1-based row number where appointment times begin.
+- `dateHeaderRow`: the 1-based row number containing actual date headers. The clinic sheet uses row 3 with `DD.MM.YYYY` values such as `04.10.2025`.
+- `firstTimeRow`: the 1-based row number where appointment times begin. The clinic sheet uses row 4 with dot-format times such as `07.00`, `07.15`, and `10.45`.
 - `timezone`: the IANA timezone used to interpret sheet dates and times.
-- `slotMinutes`: the duration of each grid slot.
+- `slotMinutes`: the duration of each grid slot. Availability requests can ask for longer `durationMinutes`; the adapter only returns starts with enough consecutive empty cells in the same date column.
 - `sheetName`: sheet tab name used for reads, slot metadata, and write ranges.
 - `spreadsheetId`: Google Sheets spreadsheet ID from the spreadsheet URL.
 - `readRange`: A1 range read by availability checks, for example `A1:AP200`.
@@ -62,6 +64,10 @@ For the current MVP, configure the clinic's active Google Sheets schedule integr
 - `enabledScheduleDays`: lowercase weekday names that the adapter may expose. Disabled weekdays are ignored even when the spreadsheet has open cells for those days.
 - `defaultDoctorId`: doctor identifier attached to every returned slot as `metadata.doctor_id`.
 - `adminConfirmationRequired`: confirmation policy attached to every returned slot as `metadata.admin_confirmation_required`.
+
+## Availability truth
+
+The adapter treats an empty appointment cell as potentially available and any non-empty appointment cell as occupied. It does not use cell colors or formatting as availability truth.
 
 ## Write behavior
 
