@@ -1,6 +1,29 @@
 # Google Sheets schedule setup
 
-The Google Sheets schedule adapter reads a clinic schedule from `core.clinic_integrations.config`. The adapter is configuration-driven: enabled days, doctor metadata, and admin-confirmation policy must come from the integration record rather than from hardcoded adapter rules.
+The Google Sheets schedule adapter reads and writes a clinic schedule from the clinic's active `core.clinic_integrations.config` record. The adapter is configuration-driven: enabled days, doctor metadata, Google Sheets identifiers, and admin-confirmation policy must come from the integration record rather than hardcoded adapter rules.
+
+Postgres remains the source of truth for appointment lifecycle state. Google Sheets stores only minimal appointment display data written by the backend `ScheduleAdapter`; AI and n8n workflows must never write directly to Google Sheets.
+
+## Service account setup
+
+1. In Google Cloud, create or select the project that owns the Google Sheets API integration.
+2. Enable the **Google Sheets API** for the project.
+3. Create a service account for the backend schedule adapter.
+4. Create a JSON key for that service account and store it in your secret manager or deployment environment.
+5. Copy the service account email from the JSON key's `client_email` field.
+6. Open the clinic schedule spreadsheet in Google Sheets and share it with that service account email. Grant edit access if appointment confirmation should write to cells.
+
+## Environment variable
+
+Set the service account JSON as an environment variable for the backend process:
+
+```bash
+GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON='{"type":"service_account","project_id":"...","private_key_id":"...","private_key":"-----BEGIN PRIVATE KEY-----\\n...\\n-----END PRIVATE KEY-----\\n","client_email":"schedule-writer@example-project.iam.gserviceaccount.com","client_id":"..."}'
+```
+
+You may use a different variable name by setting `serviceAccountJsonEnvVar` in `clinic_integrations.config`.
+
+> **Security warning:** never commit service account JSON, private keys, `.env` files containing credentials, or copied key material to git.
 
 ## MVP schedule-day config
 
@@ -14,6 +37,10 @@ For the current MVP, configure the clinic's active Google Sheets schedule integr
   "timezone": "America/New_York",
   "slotMinutes": 15,
   "sheetName": "Schedule",
+  "spreadsheetId": "1abcDEFghiJKLmnoPQRstuVWxyz1234567890",
+  "readRange": "A1:AP200",
+  "writeMode": "cell",
+  "serviceAccountJsonEnvVar": "GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON",
   "enabledScheduleDays": ["monday", "saturday"],
   "defaultDoctorId": "dr_primary",
   "adminConfirmationRequired": true
@@ -27,10 +54,36 @@ For the current MVP, configure the clinic's active Google Sheets schedule integr
 - `firstTimeRow`: the 1-based row number where appointment times begin.
 - `timezone`: the IANA timezone used to interpret sheet dates and times.
 - `slotMinutes`: the duration of each grid slot.
-- `sheetName`: optional sheet name copied into slot metadata.
+- `sheetName`: sheet tab name used for reads, slot metadata, and write ranges.
+- `spreadsheetId`: Google Sheets spreadsheet ID from the spreadsheet URL.
+- `readRange`: A1 range read by availability checks, for example `A1:AP200`.
+- `writeMode`: `cell` writes the selected slot cell. `append` is supported for integrations that intentionally append through the Sheets API, but the MVP should use `cell`.
+- `serviceAccountJsonEnvVar`: optional environment variable name containing the service account JSON. Defaults to `GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON`.
 - `enabledScheduleDays`: lowercase weekday names that the adapter may expose. Disabled weekdays are ignored even when the spreadsheet has open cells for those days.
 - `defaultDoctorId`: doctor identifier attached to every returned slot as `metadata.doctor_id`.
 - `adminConfirmationRequired`: confirmation policy attached to every returned slot as `metadata.admin_confirmation_required`.
+
+## Write behavior
+
+When `/appointments/confirm` confirms a held appointment, the backend schedule adapter writes only minimal display text to the selected sheet cell:
+
+```text
+patientName | service | AI pending
+```
+
+The adapter must not write raw messages, conversation history, trace data, LLM confidence, `state_json`, or full case data to Google Sheets.
+
+On success, the adapter returns a stable external reference in this format:
+
+```text
+spreadsheetId:sheetName:cellRange
+```
+
+## Read behavior and tests
+
+In production, availability reads come from `spreadsheetId`, `sheetName`, and `readRange`. Tests may still pass `providerMetadata.grid`; when present, the adapter uses that grid instead of calling Google Sheets.
+
+If Google Sheets credentials or new Google config fields are missing, the adapter falls back to the existing read-only behavior and uses the configured in-memory grid when available. Write attempts return `ok: false` with a structured reason instead of exposing raw Google API errors to HTTP routes.
 
 ## Disabled-day behavior
 

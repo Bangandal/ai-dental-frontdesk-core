@@ -9,6 +9,10 @@ export interface GoogleSheetsScheduleConfig {
   enabledScheduleDays: readonly string[];
   defaultDoctorId: string;
   adminConfirmationRequired: boolean;
+  spreadsheetId: string;
+  readRange: string;
+  writeMode: 'cell' | 'append';
+  serviceAccountJsonEnvVar?: string;
   sheetName?: string;
 }
 

@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
-import { GoogleSheetsScheduleAdapter } from './GoogleSheetsScheduleAdapter.js';
+import { GoogleSheetsScheduleAdapter, type GoogleSheetsValuesClient } from './GoogleSheetsScheduleAdapter.js';
 import { columnNameToIndex, parseScheduleGrid, type GoogleSheetsScheduleConfig, type ScheduleGrid } from './parseScheduleGrid.js';
 
 const config: GoogleSheetsScheduleConfig = {
@@ -13,6 +13,9 @@ const config: GoogleSheetsScheduleConfig = {
   enabledScheduleDays: ['monday', 'saturday'],
   defaultDoctorId: 'dr_primary',
   adminConfirmationRequired: true,
+  spreadsheetId: 'spreadsheet_123',
+  readRange: 'A1:AP14',
+  writeMode: 'cell',
 };
 
 function buildMockGrid(): ScheduleGrid {
@@ -187,12 +190,152 @@ describe('GoogleSheetsScheduleAdapter', () => {
     expect(occupiedCells.map((cell) => cell.time)).toEqual(['11:00', '11:30', '12:00']);
   });
 
-  it('keeps write methods disabled until Google API support is implemented', async () => {
+  it('uses providerMetadata.grid without Google credentials', async () => {
+    const adapter = new GoogleSheetsScheduleAdapter({
+      config,
+      env: {},
+    });
+
+    const response = await adapter.getAvailableSlots({
+      from: '2026-05-11T00:00:00.000Z',
+      to: '2026-05-12T00:00:00.000Z',
+      providerMetadata: {
+        grid: buildMockGrid(),
+      },
+    });
+
+    expect(response.warnings).toEqual([]);
+    expect(response.slots).toHaveLength(10);
+    expect(response.slots[0]?.metadata.cell_range).toBe('AM3');
+  });
+
+  it('reads availability from Google Sheets when no providerMetadata.grid is supplied', async () => {
+    const sheetsClient = buildMockSheetsClient({
+      getValues: buildMockGrid(),
+    });
+    const adapter = new GoogleSheetsScheduleAdapter({ config, sheetsClient });
+
+    const response = await adapter.getAvailableSlots({
+      from: '2026-05-16T00:00:00.000Z',
+      to: '2026-05-17T00:00:00.000Z',
+    });
+
+    expect(sheetsClient.spreadsheets.values.get).toHaveBeenCalledWith({
+      spreadsheetId: 'spreadsheet_123',
+      range: "'Schedule'!A1:AP14",
+    });
+    expect(response.warnings).toEqual([]);
+    expect(response.slots).toHaveLength(13);
+    expect(response.slots[0]?.metadata.cell_range).toBe('AO2');
+  });
+
+  it('writes a confirmed appointment to the selected Google Sheets cell', async () => {
+    const sheetsClient = buildMockSheetsClient();
+    const adapter = new GoogleSheetsScheduleAdapter({ config, sheetsClient });
+    const slot = (await adapter.getAvailableSlots({
+      from: '2026-05-11T00:00:00.000Z',
+      to: '2026-05-12T00:00:00.000Z',
+      providerMetadata: { grid: buildMockGrid() },
+    })).slots[0];
+
+    const response = await adapter.confirmAppointment({
+      slot,
+      patientName: 'Jane Patient',
+      service: 'Cleaning',
+    });
+
+    expect(response).toEqual({
+      ok: true,
+      appointmentId: 'spreadsheet_123:Schedule:AM3',
+      providerMetadata: {
+        spreadsheetId: 'spreadsheet_123',
+        sheetName: 'Schedule',
+        cell_range: 'AM3',
+      },
+    });
+    expect(sheetsClient.spreadsheets.values.update).toHaveBeenCalledWith({
+      spreadsheetId: 'spreadsheet_123',
+      range: "'Schedule'!AM3",
+      valueInputOption: 'USER_ENTERED',
+      requestBody: {
+        values: [['Jane Patient | Cleaning | AI pending']],
+      },
+    });
+  });
+
+  it('returns ok false when the Google Sheets write fails', async () => {
+    const sheetsClient = buildMockSheetsClient({
+      updateRejects: new Error('permission denied'),
+    });
+    const adapter = new GoogleSheetsScheduleAdapter({ config, sheetsClient });
+    const slot = (await adapter.getAvailableSlots({ providerMetadata: { grid: buildMockGrid() } })).slots[0];
+
+    await expect(adapter.confirmAppointment({
+      slot,
+      patientName: 'Jane Patient',
+      service: 'Cleaning',
+    })).resolves.toEqual({
+      ok: false,
+      reason: 'google_sheets_write_failed',
+    });
+  });
+
+  it('writes only minimal appointment display text to Google Sheets', async () => {
+    const sheetsClient = buildMockSheetsClient();
+    const adapter = new GoogleSheetsScheduleAdapter({ config, sheetsClient });
+    const slot = {
+      ...(await adapter.getAvailableSlots({ providerMetadata: { grid: buildMockGrid() } })).slots[0],
+      metadata: {
+        ...(await adapter.getAvailableSlots({ providerMetadata: { grid: buildMockGrid() } })).slots[0].metadata,
+        state_json: { secret: 'do-not-write' },
+        llm_confidence: 0.97,
+        trace_id: 'trace_123',
+      },
+    };
+
+    await adapter.confirmAppointment({
+      slot,
+      patientName: 'Jane Patient',
+      service: 'Root canal',
+      contactId: 'contact_123',
+      caseId: 'case_123',
+      leadId: 'lead_123',
+      holdId: 'hold_123',
+    });
+
+    expect(sheetsClient.spreadsheets.values.update).toHaveBeenCalledTimes(1);
+    const updateRequest = vi.mocked(sheetsClient.spreadsheets.values.update).mock.calls[0]?.[0];
+    expect(updateRequest?.requestBody.values).toEqual([['Jane Patient | Root canal | AI pending']]);
+    expect(JSON.stringify(updateRequest?.requestBody.values)).not.toContain('do-not-write');
+    expect(JSON.stringify(updateRequest?.requestBody.values)).not.toContain('trace_123');
+    expect(JSON.stringify(updateRequest?.requestBody.values)).not.toContain('0.97');
+  });
+
+  it('keeps hold and cancel methods disabled because Postgres owns holds', async () => {
     const adapter = new GoogleSheetsScheduleAdapter({ config, grid: buildMockGrid() });
     const slots = await adapter.getAvailableSlots({});
 
     await expect(adapter.holdSlot({ slot: slots.slots[0] })).resolves.toMatchObject({ ok: false });
-    await expect(adapter.confirmAppointment({ slot: slots.slots[0] })).resolves.toMatchObject({ ok: false });
     await expect(adapter.cancelHold({ holdId: 'hold_123' })).resolves.toMatchObject({ ok: false });
   });
 });
+
+
+interface MockSheetsClientOptions {
+  getValues?: ScheduleGrid;
+  updateRejects?: Error;
+}
+
+function buildMockSheetsClient(options: MockSheetsClientOptions = {}): GoogleSheetsValuesClient {
+  return {
+    spreadsheets: {
+      values: {
+        get: vi.fn().mockResolvedValue({ data: { values: options.getValues ?? [] } }),
+        update: options.updateRejects === undefined
+          ? vi.fn().mockResolvedValue({ data: {} })
+          : vi.fn().mockRejectedValue(options.updateRejects),
+        append: vi.fn().mockResolvedValue({ data: {} }),
+      },
+    },
+  };
+}
