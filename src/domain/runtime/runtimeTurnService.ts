@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
+import { AppointmentStatus } from '../appointments/appointmentStatus.js';
+import { CaseStatus } from '../cases/caseStatus.js';
 import type { RuntimeTurnInput, RuntimeTurnResult } from './runtimeContracts.js';
 
 export interface RuntimeClinicRecord {
@@ -31,6 +33,89 @@ export interface RuntimeConvoStateRecord {
   clinicId: string;
   state: Record<string, unknown>;
   stateVersion: number;
+}
+
+export interface RuntimeCaseRecord {
+  id: string;
+  clinicId: string;
+  contactId: string;
+  caseNumber: number;
+  caseType: string;
+  topic: string | null;
+  status: string;
+  priority: string;
+  summary: string | null;
+  lastActivityAt: string;
+  collected: Record<string, unknown>;
+}
+
+export interface RuntimeCaseContext {
+  current_case_id: string | null;
+  current_case: RuntimeCaseCompact | null;
+  open_cases_count: number;
+  recent_cases_count: number;
+  hard_handoff_mode: boolean;
+  case_relation: 'none' | 'current_open_case' | 'latest_handed_off_case' | 'latest_non_open_case';
+}
+
+export interface RuntimeCaseCompact {
+  id: string;
+  case_number: number;
+  case_type: string;
+  topic: string | null;
+  status: string;
+  priority: string;
+  summary: string | null;
+  last_activity_at: string;
+  collected: Record<string, unknown>;
+}
+
+export interface RuntimeExternalAppointmentRecord {
+  id: string;
+  clinicId: string;
+  contactId: string;
+  caseId: string | null;
+  externalProvider: string;
+  service: string | null;
+  startAt: string;
+  endAt: string;
+  status: string;
+  dedupeKey: string;
+  cellRange: string | null;
+  sheetName: string | null;
+  externalRecordId: string | null;
+  meta: Record<string, unknown>;
+}
+
+export interface RuntimeBookingContext {
+  active_hold: RuntimeActiveHoldContext | null;
+  latest_appointment: RuntimeLatestAppointmentContext | null;
+}
+
+export interface RuntimeActiveHoldContext {
+  hold_id: string;
+  dedupe_key: string;
+  appointment_id: string;
+  case_id: string | null;
+  status: string;
+  service_interest: string | null;
+  service: string | null;
+  start_at: string;
+  end_at: string;
+  label: string | null;
+  provider_metadata: Record<string, unknown>;
+}
+
+export interface RuntimeLatestAppointmentContext {
+  appointment_id: string;
+  case_id: string | null;
+  status: string;
+  service_interest: string | null;
+  service: string | null;
+  start_at: string;
+  end_at: string;
+  patient_confirmed_at: string | null;
+  admin_confirmed_at: string | null;
 }
 
 export interface GetOrCreateRuntimeContactInput {
@@ -78,6 +163,17 @@ export interface RuntimeTurnRepository {
   registerInboundEvent(input: RegisterInboundEventInput): Promise<RuntimeInboundEventRecord>;
   saveInboundUserMessage(input: SaveInboundUserMessageInput): Promise<RuntimeMessageRecord>;
   loadOrInitConvoState(input: LoadOrInitConvoStateInput): Promise<RuntimeConvoStateRecord>;
+  listRecentCases(clinicId: string, contactId: string): Promise<RuntimeCaseRecord[]>;
+  findLatestHeldAppointmentForContactOrCase(
+    clinicId: string,
+    contactId: string,
+    caseId: string | null,
+  ): Promise<RuntimeExternalAppointmentRecord | null>;
+  findLatestExternalAppointmentForContactOrCase(
+    clinicId: string,
+    contactId: string,
+    caseId: string | null,
+  ): Promise<RuntimeExternalAppointmentRecord | null>;
 }
 
 interface Queryable {
@@ -161,12 +257,20 @@ export class RuntimeTurnService {
       lastUserMessageAt: new Date(),
     });
 
+    const caseContext = await loadRuntimeCaseContext(this.repository, clinic.id, contact.id);
+    const bookingContext = await loadRuntimeBookingContext(
+      this.repository,
+      clinic.id,
+      contact.id,
+      caseContext.current_case_id,
+    );
+
     return {
       trace_id: traceId,
       reply_text: 'Runtime endpoint is wired.',
       clinic_id: clinic.id,
       contact_id: contact.id,
-      case_id: null,
+      case_id: caseContext.current_case_id,
       booking_result: null,
       side_effects: [],
       debug: {
@@ -174,6 +278,8 @@ export class RuntimeTurnService {
         user_message_id: userMessage.id,
         state_version: convoState.stateVersion,
         duplicate: inboundEvent.isDuplicate,
+        case_context: caseContext,
+        booking_context: bookingContext,
       },
     };
   }
@@ -401,6 +507,100 @@ export class PgRuntimeTurnRepository implements RuntimeTurnRepository {
     }
   }
 
+  async listRecentCases(clinicId: string, contactId: string): Promise<RuntimeCaseRecord[]> {
+    const result = await this.db.query<RuntimeCaseRow>(
+      `select id,
+              clinic_id,
+              contact_id,
+              case_number,
+              case_type,
+              topic,
+              status,
+              priority,
+              summary,
+              last_activity_at,
+              collected
+       from core.cases
+       where clinic_id = $1
+         and contact_id = $2
+         and not (status = any($3))
+       order by last_activity_at desc, created_at desc
+       limit 10`,
+      [clinicId, contactId, RuntimeTerminalCaseStatuses],
+    );
+
+    return result.rows.map(mapRuntimeCaseRow);
+  }
+
+  async findLatestHeldAppointmentForContactOrCase(
+    clinicId: string,
+    contactId: string,
+    caseId: string | null,
+  ): Promise<RuntimeExternalAppointmentRecord | null> {
+    const result = await this.db.query<RuntimeExternalAppointmentRow>(
+      `select id,
+              clinic_id,
+              contact_id,
+              case_id,
+              external_provider,
+              service,
+              start_at,
+              end_at,
+              status,
+              dedupe_key,
+              cell_range,
+              sheet_name,
+              external_record_id,
+              meta
+       from core.external_appointments
+       where clinic_id = $1
+         and status = $3
+         and (
+           contact_id = $2
+           or ($4::uuid is not null and case_id = $4::uuid)
+         )
+       order by created_at desc
+       limit 1`,
+      [clinicId, contactId, AppointmentStatus.Held, caseId],
+    );
+
+    return result.rows[0] === undefined ? null : mapRuntimeExternalAppointmentRow(result.rows[0]);
+  }
+
+  async findLatestExternalAppointmentForContactOrCase(
+    clinicId: string,
+    contactId: string,
+    caseId: string | null,
+  ): Promise<RuntimeExternalAppointmentRecord | null> {
+    const result = await this.db.query<RuntimeExternalAppointmentRow>(
+      `select id,
+              clinic_id,
+              contact_id,
+              case_id,
+              external_provider,
+              service,
+              start_at,
+              end_at,
+              status,
+              dedupe_key,
+              cell_range,
+              sheet_name,
+              external_record_id,
+              meta
+       from core.external_appointments
+       where clinic_id = $1
+         and (
+           contact_id = $2
+           or ($3::uuid is not null and case_id = $3::uuid)
+         )
+       order by created_at desc
+       limit 1`,
+      [clinicId, contactId, caseId],
+    );
+
+    return result.rows[0] === undefined ? null : mapRuntimeExternalAppointmentRow(result.rows[0]);
+  }
+
   private async findContact(
     clinicId: string,
     channel: string,
@@ -487,6 +687,37 @@ type ConvoStateRow = Record<string, unknown> & {
   state_version: number;
 };
 
+type RuntimeCaseRow = Record<string, unknown> & {
+  id: string;
+  clinic_id: string;
+  contact_id: string;
+  case_number: number;
+  case_type: string;
+  topic: string | null;
+  status: string;
+  priority: string;
+  summary: string | null;
+  last_activity_at: Date | string;
+  collected: Record<string, unknown> | null;
+};
+
+type RuntimeExternalAppointmentRow = Record<string, unknown> & {
+  id: string;
+  clinic_id: string;
+  contact_id: string;
+  case_id: string | null;
+  external_provider: string;
+  service: string | null;
+  start_at: Date | string;
+  end_at: Date | string;
+  status: string;
+  dedupe_key: string;
+  cell_range: string | null;
+  sheet_name: string | null;
+  external_record_id: string | null;
+  meta: Record<string, unknown> | null;
+};
+
 function mapClinicRow(row: ClinicRow): RuntimeClinicRecord {
   return {
     id: row.id,
@@ -542,4 +773,219 @@ function mapConvoStateRow(row: ConvoStateRow | undefined): RuntimeConvoStateReco
     state: row.state_json ?? {},
     stateVersion: row.state_version,
   };
+}
+
+
+async function loadRuntimeCaseContext(
+  repository: RuntimeTurnRepository,
+  clinicId: string,
+  contactId: string,
+): Promise<RuntimeCaseContext> {
+  const recentCases = await repository.listRecentCases(clinicId, contactId);
+  const currentCase = recentCases[0] ?? null;
+  const compactCase = currentCase === null ? null : toCompactCase(currentCase);
+  const openCasesCount = recentCases.filter((caseRecord) => isOpenCaseStatus(caseRecord.status)).length;
+
+  return {
+    current_case_id: compactCase?.id ?? null,
+    current_case: compactCase,
+    open_cases_count: openCasesCount,
+    recent_cases_count: recentCases.length,
+    hard_handoff_mode: currentCase?.status === CaseStatus.HandedOff,
+    case_relation: getCaseRelation(currentCase),
+  };
+}
+
+async function loadRuntimeBookingContext(
+  repository: RuntimeTurnRepository,
+  clinicId: string,
+  contactId: string,
+  caseId: string | null,
+): Promise<RuntimeBookingContext> {
+  const [activeHold, latestAppointment] = await Promise.all([
+    repository.findLatestHeldAppointmentForContactOrCase(clinicId, contactId, caseId),
+    repository.findLatestExternalAppointmentForContactOrCase(clinicId, contactId, caseId),
+  ]);
+
+  return {
+    active_hold: activeHold === null ? null : toActiveHoldContext(activeHold),
+    latest_appointment: latestAppointment === null ? null : toLatestAppointmentContext(latestAppointment),
+  };
+}
+
+function toCompactCase(caseRecord: RuntimeCaseRecord): RuntimeCaseCompact {
+  return {
+    id: caseRecord.id,
+    case_number: caseRecord.caseNumber,
+    case_type: caseRecord.caseType,
+    topic: caseRecord.topic,
+    status: caseRecord.status,
+    priority: caseRecord.priority,
+    summary: caseRecord.summary,
+    last_activity_at: caseRecord.lastActivityAt,
+    collected: caseRecord.collected,
+  };
+}
+
+function toActiveHoldContext(appointment: RuntimeExternalAppointmentRecord): RuntimeActiveHoldContext {
+  const providerMetadata = readProviderMetadata(appointment);
+
+  return {
+    hold_id: appointment.dedupeKey,
+    dedupe_key: appointment.dedupeKey,
+    appointment_id: appointment.id,
+    case_id: appointment.caseId,
+    status: appointment.status,
+    service_interest: appointment.service,
+    service: appointment.service,
+    start_at: appointment.startAt,
+    end_at: appointment.endAt,
+    label: formatAppointmentLabel(appointment, providerMetadata),
+    provider_metadata: providerMetadata,
+  };
+}
+
+function toLatestAppointmentContext(appointment: RuntimeExternalAppointmentRecord): RuntimeLatestAppointmentContext {
+  return {
+    appointment_id: appointment.id,
+    case_id: appointment.caseId,
+    status: appointment.status,
+    service_interest: appointment.service,
+    service: appointment.service,
+    start_at: appointment.startAt,
+    end_at: appointment.endAt,
+    patient_confirmed_at: readOptionalString(appointment.meta, 'patient_confirmed_at'),
+    admin_confirmed_at: readOptionalString(appointment.meta, 'admin_confirmed_at'),
+  };
+}
+
+function getCaseRelation(caseRecord: RuntimeCaseRecord | null): RuntimeCaseContext['case_relation'] {
+  if (caseRecord === null) {
+    return 'none';
+  }
+
+  if (caseRecord.status === CaseStatus.HandedOff) {
+    return 'latest_handed_off_case';
+  }
+
+  if (isOpenCaseStatus(caseRecord.status)) {
+    return 'current_open_case';
+  }
+
+  return 'latest_non_open_case';
+}
+
+function isOpenCaseStatus(status: string): boolean {
+  return RuntimeCurrentCaseStatuses.has(status);
+}
+
+const RuntimeCurrentCaseStatuses = new Set<string>([
+  CaseStatus.Open,
+  'collecting',
+  'awaiting_patient_confirmation',
+  CaseStatus.AppointmentBookedPendingAdminConfirmation,
+  'booked_pending_admin_confirmation',
+]);
+
+const RuntimeTerminalCaseStatuses = [
+  CaseStatus.Closed,
+  'cancelled',
+  'canceled',
+  'resolved',
+];
+
+function readProviderMetadata(appointment: RuntimeExternalAppointmentRecord): Record<string, unknown> {
+  const metadata = appointment.meta.provider_metadata;
+
+  if (metadata !== null && typeof metadata === 'object' && !Array.isArray(metadata)) {
+    return metadata as Record<string, unknown>;
+  }
+
+  const storedSlot = appointment.meta.slot;
+  if (storedSlot !== null && typeof storedSlot === 'object' && !Array.isArray(storedSlot)) {
+    const slotMetadata = (storedSlot as Record<string, unknown>).metadata;
+    if (slotMetadata !== null && typeof slotMetadata === 'object' && !Array.isArray(slotMetadata)) {
+      return slotMetadata as Record<string, unknown>;
+    }
+  }
+
+  return {
+    cell_range: appointment.cellRange,
+    sheet_name: appointment.sheetName,
+    external_record_id: appointment.externalRecordId,
+  };
+}
+
+function formatAppointmentLabel(
+  appointment: RuntimeExternalAppointmentRecord,
+  providerMetadata: Record<string, unknown>,
+): string | null {
+  const timezone = readOptionalString(providerMetadata, 'timezone') ?? readSlotTimezone(appointment.meta) ?? 'UTC';
+
+  try {
+    return new Intl.DateTimeFormat('ru-RU', {
+      timeZone: timezone,
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    }).format(new Date(appointment.startAt));
+  } catch {
+    return null;
+  }
+}
+
+function readSlotTimezone(meta: Record<string, unknown>): string | null {
+  const storedSlot = meta.slot;
+
+  if (storedSlot === null || typeof storedSlot !== 'object' || Array.isArray(storedSlot)) {
+    return null;
+  }
+
+  return readOptionalString(storedSlot as Record<string, unknown>, 'timezone');
+}
+
+function readOptionalString(source: Record<string, unknown>, key: string): string | null {
+  const value = source[key];
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+function mapRuntimeCaseRow(row: RuntimeCaseRow): RuntimeCaseRecord {
+  return {
+    id: row.id,
+    clinicId: row.clinic_id,
+    contactId: row.contact_id,
+    caseNumber: row.case_number,
+    caseType: row.case_type,
+    topic: row.topic,
+    status: row.status,
+    priority: row.priority,
+    summary: row.summary,
+    lastActivityAt: toIso(row.last_activity_at),
+    collected: row.collected ?? {},
+  };
+}
+
+function mapRuntimeExternalAppointmentRow(row: RuntimeExternalAppointmentRow): RuntimeExternalAppointmentRecord {
+  return {
+    id: row.id,
+    clinicId: row.clinic_id,
+    contactId: row.contact_id,
+    caseId: row.case_id,
+    externalProvider: row.external_provider,
+    service: row.service,
+    startAt: toIso(row.start_at),
+    endAt: toIso(row.end_at),
+    status: row.status,
+    dedupeKey: row.dedupe_key,
+    cellRange: row.cell_range,
+    sheetName: row.sheet_name,
+    externalRecordId: row.external_record_id,
+    meta: row.meta ?? {},
+  };
+}
+
+function toIso(value: Date | string): string {
+  return value instanceof Date ? value.toISOString() : value;
 }
