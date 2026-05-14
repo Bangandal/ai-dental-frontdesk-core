@@ -523,10 +523,10 @@ export class PgRuntimeTurnRepository implements RuntimeTurnRepository {
        from core.cases
        where clinic_id = $1
          and contact_id = $2
-         and status = any($3)
+         and not (status = any($3))
        order by last_activity_at desc, created_at desc
        limit 10`,
-      [clinicId, contactId, [CaseStatus.Open, CaseStatus.AppointmentBookedPendingAdminConfirmation, CaseStatus.HandedOff]],
+      [clinicId, contactId, RuntimeTerminalCaseStatuses],
     );
 
     return result.rows.map(mapRuntimeCaseRow);
@@ -876,8 +876,23 @@ function getCaseRelation(caseRecord: RuntimeCaseRecord | null): RuntimeCaseConte
 }
 
 function isOpenCaseStatus(status: string): boolean {
-  return status === CaseStatus.Open || status === CaseStatus.AppointmentBookedPendingAdminConfirmation;
+  return RuntimeCurrentCaseStatuses.has(status);
 }
+
+const RuntimeCurrentCaseStatuses = new Set<string>([
+  CaseStatus.Open,
+  'collecting',
+  'awaiting_patient_confirmation',
+  CaseStatus.AppointmentBookedPendingAdminConfirmation,
+  'booked_pending_admin_confirmation',
+]);
+
+const RuntimeTerminalCaseStatuses = [
+  CaseStatus.Closed,
+  'cancelled',
+  'canceled',
+  'resolved',
+];
 
 function readProviderMetadata(appointment: RuntimeExternalAppointmentRecord): Record<string, unknown> {
   const metadata = appointment.meta.provider_metadata;

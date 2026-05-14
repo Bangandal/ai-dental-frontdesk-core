@@ -165,6 +165,44 @@ describe('runtime routes', () => {
     }
   });
 
+  it.each(['collecting', 'awaiting_patient_confirmation'])(
+    'returns %s case as current_case_id and current_open_case relation',
+    async (status) => {
+      const repository = new FakeRuntimeTurnRepository({
+        cases: [makeCase({ id: '55555555-5555-5555-5555-555555555555', status })],
+      });
+      const app = Fastify();
+      await app.register(registerRuntimeRoutes, {
+        runtimeTurnService: new RuntimeTurnService(repository),
+      });
+
+      try {
+        const response = await app.inject({ method: 'POST', url: '/runtime/turn', payload: validPayload });
+
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toMatchObject({
+          case_id: '55555555-5555-5555-5555-555555555555',
+          debug: {
+            case_context: {
+              current_case_id: '55555555-5555-5555-5555-555555555555',
+              current_case: {
+                id: '55555555-5555-5555-5555-555555555555',
+                status,
+              },
+              open_cases_count: 1,
+              recent_cases_count: 1,
+              hard_handoff_mode: false,
+              case_relation: 'current_open_case',
+            },
+          },
+        });
+        expect(repository.mutationCalls).toEqual([]);
+      } finally {
+        await app.close();
+      }
+    },
+  );
+
   it('returns active hold and latest appointment in booking_context', async () => {
     const activeHold = makeAppointment({
       id: '66666666-6666-6666-6666-666666666666',
