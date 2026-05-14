@@ -94,6 +94,37 @@ describe('runtime routes', () => {
     }
   });
 
+  it('returns clinic_not_found for unknown or inactive clinic_code', async () => {
+    const repository = new FakeRuntimeTurnRepository({ clinicFound: false });
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, {
+      runtimeTurnService: new RuntimeTurnService(repository),
+    });
+
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/runtime/turn',
+        payload: {
+          ...validPayload,
+          clinic_code: 'inactive_clinic',
+        },
+      });
+
+      expect(response.statusCode).toBe(404);
+      expect(response.json()).toMatchObject({
+        error: {
+          code: 'clinic_not_found',
+          message: 'Active clinic was not found for the provided clinic_code.',
+          trace_id: expect.any(String),
+        },
+      });
+      expect(repository.calls).toEqual({ clinicCode: 'inactive_clinic' });
+    } finally {
+      await app.close();
+    }
+  });
+
   it('returns validation_failed for invalid runtime turn input', async () => {
     const app = Fastify();
     await app.register(registerRuntimeRoutes, {
@@ -120,6 +151,8 @@ describe('runtime routes', () => {
 });
 
 class FakeRuntimeTurnRepository implements RuntimeTurnRepository {
+  constructor(private readonly options: { clinicFound: boolean } = { clinicFound: true }) {}
+
   readonly calls: {
     clinicCode?: string;
     contact?: GetOrCreateRuntimeContactInput;
@@ -130,6 +163,10 @@ class FakeRuntimeTurnRepository implements RuntimeTurnRepository {
 
   async findActiveClinicByCode(code: string) {
     this.calls.clinicCode = code;
+
+    if (!this.options.clinicFound) {
+      return null;
+    }
 
     return {
       id: '11111111-1111-1111-1111-111111111111',

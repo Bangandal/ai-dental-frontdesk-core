@@ -1,6 +1,10 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 
-import { PgRuntimeTurnRepository, RuntimeTurnService } from '../../domain/runtime/runtimeTurnService.js';
+import {
+  PgRuntimeTurnRepository,
+  RuntimeClinicNotFoundError,
+  RuntimeTurnService,
+} from '../../domain/runtime/runtimeTurnService.js';
 import { runtimeTurnInputSchema } from '../../domain/runtime/runtimeContracts.js';
 
 export interface RuntimeRoutesOptions {
@@ -27,7 +31,19 @@ export async function registerRuntimeRoutes(
       request.log.info({ trace_id: response.trace_id }, 'runtime turn handled');
 
       return reply.send(response);
-    } catch {
+    } catch (error) {
+      if (error instanceof RuntimeClinicNotFoundError) {
+        request.log.info({ trace_id: error.traceId, clinic_code: error.clinicCode }, 'runtime clinic not found');
+
+        return reply.code(404).send({
+          error: {
+            code: 'clinic_not_found',
+            message: 'Active clinic was not found for the provided clinic_code.',
+            trace_id: error.traceId,
+          },
+        });
+      }
+
       return reply.code(500).send({
         error: {
           code: 'internal_error',

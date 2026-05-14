@@ -91,6 +91,18 @@ interface PgError extends Error {
   code?: string;
 }
 
+export class RuntimeClinicNotFoundError extends Error {
+  readonly code = 'clinic_not_found';
+
+  constructor(
+    readonly clinicCode: string,
+    readonly traceId: string,
+  ) {
+    super('Active clinic was not found for the provided clinic_code.');
+    this.name = 'RuntimeClinicNotFoundError';
+  }
+}
+
 export class RuntimeTurnService {
   constructor(private readonly repository: RuntimeTurnRepository) {}
 
@@ -103,7 +115,7 @@ export class RuntimeTurnService {
     const clinic = await this.repository.findActiveClinicByCode(input.clinic_code);
 
     if (clinic === null) {
-      throw new Error(`Active clinic not found for code: ${input.clinic_code}`);
+      throw new RuntimeClinicNotFoundError(input.clinic_code, traceId);
     }
 
     const contact = await this.repository.getOrCreateContact({
