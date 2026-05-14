@@ -1,11 +1,13 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 
-import { RuntimeTurnService } from '../../domain/runtime/runtimeTurnService.js';
+import { PgRuntimeTurnRepository, RuntimeTurnService } from '../../domain/runtime/runtimeTurnService.js';
 import { runtimeTurnInputSchema } from '../../domain/runtime/runtimeContracts.js';
 
 export interface RuntimeRoutesOptions {
   runtimeTurnService?: RuntimeTurnService;
 }
+
+let defaultRuntimeTurnService: RuntimeTurnService | undefined;
 
 export async function registerRuntimeRoutes(
   app: FastifyInstance,
@@ -19,7 +21,7 @@ export async function registerRuntimeRoutes(
     }
 
     try {
-      const service = options.runtimeTurnService ?? new RuntimeTurnService();
+      const service = options.runtimeTurnService ?? await createDefaultRuntimeTurnService();
       const response = await service.handleTurn(parsed.data);
 
       request.log.info({ trace_id: response.trace_id }, 'runtime turn handled');
@@ -34,6 +36,17 @@ export async function registerRuntimeRoutes(
       });
     }
   });
+}
+
+async function createDefaultRuntimeTurnService(): Promise<RuntimeTurnService> {
+  if (defaultRuntimeTurnService !== undefined) {
+    return defaultRuntimeTurnService;
+  }
+
+  const { pool } = await import('../../db/pool.js');
+  defaultRuntimeTurnService = new RuntimeTurnService(new PgRuntimeTurnRepository(pool));
+
+  return defaultRuntimeTurnService;
 }
 
 function sendValidationError(reply: FastifyReply, details: unknown): FastifyReply {

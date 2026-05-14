@@ -6,6 +6,7 @@ export const runtimeMetaSchema = z.object({
   username: z.string().nullable().optional(),
   first_name: z.string().nullable().optional(),
   last_name: z.string().nullable().optional(),
+  language_code: z.string().nullable().optional(),
 });
 
 export const runtimeTurnInputSchema = z.object({
