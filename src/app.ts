@@ -5,6 +5,7 @@ import { registerBookingRoutes } from './http/routes/booking.routes.js';
 import { registerAppointmentRoutes } from './http/routes/appointments.routes.js';
 import { registerCaseRoutes } from './http/routes/cases.routes.js';
 import { registerHealthRoutes } from './http/routes/health.routes.js';
+import { registerRuntimeRoutes } from './http/routes/runtime.routes.js';
 
 export async function buildApp(): Promise<FastifyInstance> {
   const app = Fastify({
@@ -12,6 +13,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   });
 
   await app.register(registerHealthRoutes);
+  await app.register(registerRuntimeRoutes);
   await app.register(registerAvailabilityRoutes);
   await app.register(registerAppointmentRoutes);
   await app.register(registerBookingRoutes);
