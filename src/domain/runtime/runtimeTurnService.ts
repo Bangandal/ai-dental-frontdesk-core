@@ -337,10 +337,17 @@ export class RuntimeTurnService {
 
       if (policyDecision.should_call_booking && policyDecision.booking_request !== null && this.bookingApplyService !== undefined) {
         debug.booking_request = policyDecision.booking_request;
-        bookingResult = await this.bookingApplyService.apply(policyDecision.booking_request);
-        debug.booking_result = bookingResult;
-        replyText = buildReplyFromBookingResult(bookingResult);
-        debug.reply_source = 'booking_result';
+
+        try {
+          bookingResult = await this.bookingApplyService.apply(policyDecision.booking_request);
+          debug.booking_result = bookingResult;
+          replyText = buildReplyFromBookingResult(bookingResult);
+          debug.reply_source = 'booking_result';
+        } catch (error) {
+          debug.booking_error = formatBookingApplyError(error);
+          debug.reply_source = 'booking_error';
+          replyText = 'Не удалось автоматически проверить запись. Администратор проверит вручную и свяжется с вами.';
+        }
       } else if (policyDecision.should_call_booking && this.bookingApplyService === undefined) {
         debug.reply_source = 'safe_fallback';
         debug.booking_request = policyDecision.booking_request;
@@ -410,6 +417,13 @@ function buildReplyFromBookingResult(bookingResult: BookingApplyResponse): strin
   }
 
   return RUNTIME_AI_SAFE_FALLBACK_REPLY;
+}
+
+function formatBookingApplyError(_error: unknown): Record<string, string> {
+  return {
+    code: 'booking_apply_failed',
+    message: 'Booking apply failed.',
+  };
 }
 
 export class PgRuntimeTurnRepository implements RuntimeTurnRepository {

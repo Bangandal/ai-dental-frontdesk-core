@@ -339,6 +339,53 @@ describe('runtime routes', () => {
     }
   });
 
+  it('returns manual-check reply when BookingApplyService throws', async () => {
+    const repository = new FakeRuntimeTurnRepository({ cases: [makeCase()] });
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'availability_request',
+      requested_action: 'check_availability',
+      reply_draft: 'AI draft must not claim booking success.',
+      booking: {
+        preferred_date_iso: '2026-05-16',
+        preferred_weekday: null,
+        time_of_day: 'any',
+        patient_confirmed_proposed_slot: false,
+        patient_rejected_proposed_slot: false,
+        selected_hold_id: null,
+      },
+    }));
+    const bookingApplyService = new ThrowingBookingApplyService(new Error('database connection failed'));
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, {
+      runtimeTurnService: new RuntimeTurnService(repository, aiClient, bookingApplyService),
+    });
+
+    try {
+      const response = await app.inject({ method: 'POST', url: '/runtime/turn', payload: validPayload });
+
+      expect(response.statusCode).toBe(200);
+      expect(bookingApplyService.calls).toHaveLength(1);
+      expect(response.json()).toMatchObject({
+        reply_text: 'Не удалось автоматически проверить запись. Администратор проверит вручную и свяжется с вами.',
+        booking_result: null,
+        side_effects: [],
+        debug: {
+          reply_source: 'booking_error',
+          booking_error: {
+            code: 'booking_apply_failed',
+            message: 'Booking apply failed.',
+          },
+        },
+      });
+      expect(response.json().debug.ai_error).toBeUndefined();
+      expect(response.json().reply_text).not.toContain('зафиксирован');
+      expect(response.json().reply_text).not.toContain('подтвержд');
+      expect(response.json().reply_text).not.toContain('Есть окно');
+    } finally {
+      await app.close();
+    }
+  });
+
   it('does not call BookingApplyService when availability request only has preferredWeekday', async () => {
     const repository = new FakeRuntimeTurnRepository({
       cases: [makeCase({ collected: { service_interest: 'консультация' } })],
@@ -1154,6 +1201,17 @@ function cancelNotImplementedResponse(): BookingApplyResponse {
     reply_text_override: 'Не удалось автоматически подтвердить запись. Я передам администратору для ручной проверки.',
     reason: 'cancel_hold_not_implemented',
   };
+}
+
+class ThrowingBookingApplyService {
+  constructor(private readonly error: Error) {}
+
+  readonly calls: BookingApplyRequest[] = [];
+
+  async apply(request: BookingApplyRequest): Promise<BookingApplyResponse> {
+    this.calls.push(request);
+    throw this.error;
+  }
 }
 
 class FakeRuntimeAIClient implements RuntimeAIClient {
