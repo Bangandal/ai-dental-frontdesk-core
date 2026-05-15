@@ -10,11 +10,16 @@ import type {
   RuntimeTurnRepository,
   SaveInboundUserMessageInput,
 } from '../../domain/runtime/runtimeTurnService.js';
-import { RUNTIME_AI_SAFE_FALLBACK_REPLY, type RuntimeAIClient, type RuntimeAIExtractionInput } from '../../domain/runtime/runtimeAiClient.js';
+import {
+  NoopRuntimeAIClient,
+  RUNTIME_AI_SAFE_FALLBACK_REPLY,
+  type RuntimeAIClient,
+  type RuntimeAIExtractionInput,
+} from '../../domain/runtime/runtimeAiClient.js';
 import { RuntimeAIProviderError } from '../../domain/runtime/openAiRuntimeClient.js';
 import type { RuntimeAIOutput } from '../../domain/runtime/runtimeContracts.js';
 import { RuntimeTurnService } from '../../domain/runtime/runtimeTurnService.js';
-import { registerRuntimeRoutes } from './runtime.routes.js';
+import { createRuntimeAIClient, registerRuntimeRoutes } from './runtime.routes.js';
 
 const validPayload = {
   clinic_code: 'clinic_1',
@@ -30,6 +35,43 @@ const validPayload = {
     last_name: null,
   },
 } as const;
+
+
+describe('runtime AI client factory', () => {
+  it('uses NoopRuntimeAIClient when OpenAI runtime is not explicitly enabled', async () => {
+    const aiClient = await createRuntimeAIClient({
+      openaiRuntimeEnabled: false,
+    });
+
+    expect(aiClient).toBeInstanceOf(NoopRuntimeAIClient);
+  });
+
+  it('requires OpenAI credentials when OpenAI runtime is enabled', async () => {
+    await expect(createRuntimeAIClient({
+      openaiRuntimeEnabled: true,
+      openaiModel: 'gpt-test-runtime',
+    })).rejects.toThrow('OPENAI_API_KEY is required when OPENAI_RUNTIME_ENABLED=true.');
+
+    await expect(createRuntimeAIClient({
+      openaiRuntimeEnabled: true,
+      openaiApiKey: 'test-key',
+    })).rejects.toThrow('OPENAI_MODEL is required when OPENAI_RUNTIME_ENABLED=true.');
+  });
+
+  it('constructs OpenAIRuntimeAIClient only when OpenAI runtime is explicitly enabled and configured', async () => {
+    const aiClient = await createRuntimeAIClient({
+      openaiRuntimeEnabled: true,
+      openaiApiKey: 'test-key',
+      openaiModel: 'gpt-test-runtime',
+      openaiTimeoutMs: 5000,
+    });
+
+    expect(aiClient).toMatchObject({
+      provider: 'openai',
+      model: 'gpt-test-runtime',
+    });
+  });
+});
 
 describe('runtime routes', () => {
   it('calls AI client with user_text, case_context, booking_context, and recent state', async () => {

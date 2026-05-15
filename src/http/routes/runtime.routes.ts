@@ -1,6 +1,10 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 
 import {
+  NoopRuntimeAIClient,
+  type RuntimeAIClient,
+} from '../../domain/runtime/runtimeAiClient.js';
+import {
   PgRuntimeTurnRepository,
   RuntimeClinicNotFoundError,
   RuntimeTurnService,
@@ -9,6 +13,13 @@ import { runtimeTurnInputSchema } from '../../domain/runtime/runtimeContracts.js
 
 export interface RuntimeRoutesOptions {
   runtimeTurnService?: RuntimeTurnService;
+}
+
+export interface RuntimeAIClientFactoryConfig {
+  openaiRuntimeEnabled: boolean;
+  openaiApiKey?: string;
+  openaiModel?: string;
+  openaiTimeoutMs?: number;
 }
 
 let defaultRuntimeTurnService: RuntimeTurnService | undefined;
@@ -59,20 +70,42 @@ async function createDefaultRuntimeTurnService(): Promise<RuntimeTurnService> {
     return defaultRuntimeTurnService;
   }
 
-  const [{ pool }, { env }, { OpenAIRuntimeAIClient }] = await Promise.all([
+  const [{ pool }, { env }] = await Promise.all([
     import('../../db/pool.js'),
     import('../../config/env.js'),
-    import('../../domain/runtime/openAiRuntimeClient.js'),
   ]);
-  const aiClient = new OpenAIRuntimeAIClient({
-    apiKey: env.OPENAI_API_KEY,
-    model: env.OPENAI_MODEL ?? '',
-    timeoutMs: env.OPENAI_TIMEOUT_MS,
+  const aiClient = await createRuntimeAIClient({
+    openaiRuntimeEnabled: env.OPENAI_RUNTIME_ENABLED,
+    openaiApiKey: env.OPENAI_API_KEY,
+    openaiModel: env.OPENAI_MODEL,
+    openaiTimeoutMs: env.OPENAI_TIMEOUT_MS,
   });
 
   defaultRuntimeTurnService = new RuntimeTurnService(new PgRuntimeTurnRepository(pool), aiClient);
 
   return defaultRuntimeTurnService;
+}
+
+export async function createRuntimeAIClient(config: RuntimeAIClientFactoryConfig): Promise<RuntimeAIClient> {
+  if (!config.openaiRuntimeEnabled) {
+    return new NoopRuntimeAIClient();
+  }
+
+  if (config.openaiApiKey === undefined || config.openaiApiKey.trim() === '') {
+    throw new Error('OPENAI_API_KEY is required when OPENAI_RUNTIME_ENABLED=true.');
+  }
+
+  if (config.openaiModel === undefined || config.openaiModel.trim() === '') {
+    throw new Error('OPENAI_MODEL is required when OPENAI_RUNTIME_ENABLED=true.');
+  }
+
+  const { OpenAIRuntimeAIClient } = await import('../../domain/runtime/openAiRuntimeClient.js');
+
+  return new OpenAIRuntimeAIClient({
+    apiKey: config.openaiApiKey,
+    model: config.openaiModel,
+    timeoutMs: config.openaiTimeoutMs,
+  });
 }
 
 function sendValidationError(reply: FastifyReply, details: unknown): FastifyReply {

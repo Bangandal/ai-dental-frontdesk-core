@@ -5,11 +5,12 @@ PR 4B adds the real OpenAI-backed runtime AI adapter for semantic extraction onl
 ## Required environment
 
 - `DATABASE_URL`
+- `OPENAI_RUNTIME_ENABLED=true`
 - `OPENAI_API_KEY`
 - `OPENAI_MODEL`
 - Optional: `OPENAI_TIMEOUT_MS`
 
-`OPENAI_MODEL` must be provided by the environment; the runtime service does not hardcode a production model.
+`OPENAI_RUNTIME_ENABLED` defaults to `false`. When it is not set to `true`, `/runtime/turn` uses `NoopRuntimeAIClient` so the backend can run without OpenAI credentials. When `OPENAI_RUNTIME_ENABLED=true`, both `OPENAI_API_KEY` and `OPENAI_MODEL` are required. `OPENAI_MODEL` must be provided by the environment; the runtime service does not hardcode a production model.
 
 ## Example curl
 
