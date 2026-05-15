@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { AppointmentStatus } from '../appointments/appointmentStatus.js';
 import type { BookingApplyRequest, BookingApplyResponse } from '../booking/bookingApply.js';
 import { CaseStatus } from '../cases/caseStatus.js';
-import type { RuntimeTurnInput, RuntimeTurnResult } from './runtimeContracts.js';
+import type { RuntimeAIOutput, RuntimeSideEffect, RuntimeTurnInput, RuntimeTurnResult } from './runtimeContracts.js';
 import {
   formatRuntimeAIError,
   NoopRuntimeAIClient,
@@ -28,6 +28,23 @@ export interface RuntimeContactRecord {
   clinicId: string;
   channel: string;
   externalUserId: string;
+}
+
+export interface CreateAdminNotificationInput {
+  clinicId: string;
+  contactId: string;
+  caseId: string | null;
+  leadId: string | null;
+  channel: string;
+  recipient: string;
+  templateKey: string;
+  dedupeKey: string;
+  payload: Record<string, unknown>;
+  traceId: string;
+}
+
+export interface RuntimeAdminNotificationRecord {
+  notification_id: string;
 }
 
 export interface RuntimeInboundEventRecord {
@@ -185,6 +202,7 @@ export interface RuntimeTurnRepository {
   registerInboundEvent(input: RegisterInboundEventInput): Promise<RuntimeInboundEventRecord>;
   saveInboundUserMessage(input: SaveInboundUserMessageInput): Promise<RuntimeMessageRecord>;
   saveOutboundAssistantMessage(input: SaveOutboundAssistantMessageInput): Promise<RuntimeMessageRecord>;
+  createAdminNotification(input: CreateAdminNotificationInput): Promise<RuntimeAdminNotificationRecord>;
   loadOrInitConvoState(input: LoadOrInitConvoStateInput): Promise<RuntimeConvoStateRecord>;
   listRecentCases(clinicId: string, contactId: string): Promise<RuntimeCaseRecord[]>;
   findLatestHeldAppointmentForContactOrCase(
@@ -325,6 +343,7 @@ export class RuntimeTurnService {
     let replyText = RUNTIME_AI_SAFE_FALLBACK_REPLY;
     let replySource: RuntimeReplySource = 'safe_fallback';
     let bookingResult: BookingApplyResponse | null = null;
+    let aiOutputForNotification: RuntimeAIOutput | null = null;
 
     try {
       const rawAIOutput = await this.aiClient.extract({
@@ -334,6 +353,7 @@ export class RuntimeTurnService {
         context: prompt.context,
       });
       const aiOutput = parseRuntimeAIOutput(rawAIOutput);
+      aiOutputForNotification = aiOutput;
       debug.ai_output = aiOutput;
       const policyDecision = decideRuntimeAction({
         ai_output: aiOutput,
@@ -421,6 +441,19 @@ export class RuntimeTurnService {
       debug.outbound_persistence_error = formatOutboundPersistenceError(error);
     }
 
+    const sideEffects = await this.createAdminNotificationSideEffect({
+      clinic,
+      contact,
+      caseId: caseContext.current_case_id,
+      input,
+      traceId,
+      replyText,
+      replySource,
+      bookingResult,
+      aiOutput: aiOutputForNotification,
+      debug,
+    });
+
     return {
       trace_id: traceId,
       reply_text: replyText,
@@ -428,10 +461,237 @@ export class RuntimeTurnService {
       contact_id: contact.id,
       case_id: caseContext.current_case_id,
       booking_result: bookingResult as Record<string, unknown> | null,
-      side_effects: [],
+      side_effects: sideEffects,
       debug,
     };
   }
+
+  private async createAdminNotificationSideEffect(input: CreateAdminNotificationSideEffectInput): Promise<RuntimeSideEffect[]> {
+    const trigger = determineAdminNotificationTrigger({
+      bookingResult: input.bookingResult,
+      aiOutput: input.aiOutput,
+      replySource: input.replySource,
+    });
+
+    if (trigger === null) {
+      return [];
+    }
+
+    const recipient = readAdminNotificationRecipient(input.clinic.settings);
+
+    if (recipient === null) {
+      input.debug.admin_notification_skipped = {
+        reason: 'admin_recipient_not_configured',
+        trigger: trigger.trigger,
+      };
+      return [];
+    }
+
+    const templateKey = 'runtime_admin_attention';
+    const dedupeKey = `runtime_admin_notification:${input.traceId}:${trigger.trigger}`;
+    const payload = buildAdminNotificationPayload({
+      ...input,
+      trigger: trigger.trigger,
+      reason: trigger.reason,
+    });
+
+    try {
+      const notification = await this.repository.createAdminNotification({
+        clinicId: input.clinic.id,
+        contactId: input.contact.id,
+        caseId: input.caseId,
+        leadId: null,
+        channel: 'telegram',
+        recipient,
+        templateKey,
+        dedupeKey,
+        payload,
+        traceId: input.traceId,
+      });
+
+      input.debug.admin_notification = {
+        notification_id: notification.notification_id,
+        trigger: trigger.trigger,
+        dedupe_key: dedupeKey,
+      };
+
+      return [{
+        type: 'admin_notification',
+        channel: 'telegram',
+        notification_id: notification.notification_id,
+        recipient,
+        template_key: templateKey,
+        payload,
+      }];
+    } catch (error) {
+      input.debug.admin_notification_error = formatAdminNotificationPersistenceError(error);
+      return [];
+    }
+  }
+}
+
+interface CreateAdminNotificationSideEffectInput {
+  clinic: RuntimeClinicRecord;
+  contact: RuntimeContactRecord;
+  caseId: string | null;
+  input: RuntimeTurnInput;
+  traceId: string;
+  replyText: string;
+  replySource: RuntimeReplySource;
+  bookingResult: BookingApplyResponse | null;
+  aiOutput: RuntimeAIOutput | null;
+  debug: Record<string, unknown>;
+}
+
+interface AdminNotificationTrigger {
+  trigger: string;
+  reason: string;
+}
+
+function determineAdminNotificationTrigger(input: {
+  bookingResult: BookingApplyResponse | null;
+  aiOutput: RuntimeAIOutput | null;
+  replySource: RuntimeReplySource;
+}): AdminNotificationTrigger | null {
+  if (input.replySource === 'booking_error') {
+    return { trigger: 'booking_error', reason: 'booking_apply_failed' };
+  }
+
+  if (input.bookingResult?.should_notify_admin === true) {
+    return {
+      trigger: `booking_result_${input.bookingResult.booking_status}`,
+      reason: input.bookingResult.reason,
+    };
+  }
+
+  if (input.aiOutput?.handoff_recommended === true) {
+    return { trigger: 'ai_handoff_recommended', reason: 'handoff_recommended' };
+  }
+
+  if (input.aiOutput?.requested_action === 'handoff') {
+    return { trigger: 'ai_requested_handoff', reason: 'requested_action_handoff' };
+  }
+
+  if (input.aiOutput?.conversation_intent === 'urgent') {
+    return { trigger: 'ai_urgent_intent', reason: 'conversation_intent_urgent' };
+  }
+
+  if (input.aiOutput?.conversation_intent === 'follow_up' && hasRequestHumanFlag(input.aiOutput)) {
+    return { trigger: 'ai_follow_up_request_human', reason: 'follow_up_request_human' };
+  }
+
+  return null;
+}
+
+function hasRequestHumanFlag(aiOutput: RuntimeAIOutput): boolean {
+  const value = (aiOutput as unknown as Record<string, unknown>).request_human;
+  return value === true;
+}
+
+function readAdminNotificationRecipient(settings: Record<string, unknown>): string | null {
+  const directKeys = ['admin_telegram_chat_id', 'admin_chat_id', 'notification_recipient'];
+
+  for (const key of directKeys) {
+    const value = settings[key];
+
+    if (typeof value === 'string' && value.trim() !== '') {
+      return value;
+    }
+
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return String(value);
+    }
+  }
+
+  const notifications = settings.notifications;
+
+  if (notifications !== null && typeof notifications === 'object' && !Array.isArray(notifications)) {
+    const value = (notifications as Record<string, unknown>).admin_telegram_chat_id;
+
+    if (typeof value === 'string' && value.trim() !== '') {
+      return value;
+    }
+
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return String(value);
+    }
+  }
+
+  return null;
+}
+
+function buildAdminNotificationPayload(input: CreateAdminNotificationSideEffectInput & {
+  trigger: string;
+  reason: string;
+}): Record<string, unknown> {
+  return {
+    trace_id: input.traceId,
+    clinic_id: input.clinic.id,
+    contact_id: input.contact.id,
+    case_id: input.caseId,
+    user_text: input.input.text,
+    reply_text: input.replyText,
+    reason: input.reason,
+    trigger: input.trigger,
+    booking_result: summarizeBookingResult(input.bookingResult),
+    contact: {
+      username: input.input.meta?.username ?? null,
+      first_name: input.input.meta?.first_name ?? null,
+      last_name: input.input.meta?.last_name ?? null,
+      chat_id: input.input.chat_id,
+      external_user_id: input.input.external_user_id,
+      channel: input.input.channel,
+    },
+  };
+}
+
+function summarizeBookingResult(bookingResult: BookingApplyResponse | null): Record<string, unknown> | null {
+  if (bookingResult === null) {
+    return null;
+  }
+
+  return {
+    booking_action: bookingResult.booking_action,
+    booking_status: bookingResult.booking_status,
+    appointment_id: readBookingAppointmentId(bookingResult),
+    hold_id: 'hold_id' in bookingResult ? bookingResult.hold_id : null,
+    proposed_slot: summarizeProposedSlot(bookingResult),
+  };
+}
+
+function readBookingAppointmentId(bookingResult: BookingApplyResponse): string | null {
+  if ('appointment_id' in bookingResult && typeof bookingResult.appointment_id === 'string') {
+    return bookingResult.appointment_id;
+  }
+
+  return null;
+}
+
+function summarizeProposedSlot(bookingResult: BookingApplyResponse): Record<string, string> | null {
+  const proposedSlot = 'proposed_slot' in bookingResult ? bookingResult.proposed_slot : null;
+
+  if (proposedSlot !== null && proposedSlot !== undefined) {
+    return {
+      label: proposedSlot.label,
+      start_at: proposedSlot.start_at,
+    };
+  }
+
+  if ('appointment' in bookingResult && bookingResult.appointment !== undefined) {
+    return {
+      label: bookingResult.appointment.label,
+      start_at: bookingResult.appointment.start_at,
+    };
+  }
+
+  return null;
+}
+
+function formatAdminNotificationPersistenceError(_error: unknown): Record<string, string> {
+  return {
+    code: 'admin_notification_persistence_failed',
+    message: 'Admin notification persistence failed.',
+  };
 }
 
 function formatBookingApplyError(_error: unknown): Record<string, string> {
@@ -696,6 +956,67 @@ export class PgRuntimeTurnRepository implements RuntimeTurnRepository {
     return mapMessageRow(result.rows[0]);
   }
 
+  async createAdminNotification(input: CreateAdminNotificationInput): Promise<RuntimeAdminNotificationRecord> {
+    try {
+      const result = await this.db.query<NotificationRow>(
+        `insert into core.notifications (
+           clinic_id,
+           contact_id,
+           lead_id,
+           case_id,
+           channel,
+           recipient,
+           template_key,
+           dedupe_key,
+           payload,
+           status,
+           send_attempts,
+           provider_message_id,
+           error_text
+         )
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, 'pending', 0, null, null)
+         returning id`,
+        [
+          input.clinicId,
+          input.contactId,
+          input.leadId,
+          input.caseId,
+          input.channel,
+          input.recipient,
+          input.templateKey,
+          input.dedupeKey,
+          JSON.stringify({
+            ...input.payload,
+            trace_id: input.traceId,
+          }),
+        ],
+      );
+
+      return mapNotificationRow(result.rows[0]);
+    } catch (error) {
+      if (!isUniqueViolation(error)) {
+        throw error;
+      }
+
+      const duplicate = await this.db.query<NotificationRow>(
+        `select id
+         from core.notifications
+         where clinic_id = $1
+           and dedupe_key = $2
+         limit 1`,
+        [input.clinicId, input.dedupeKey],
+      );
+
+      const row = duplicate.rows[0];
+
+      if (row === undefined) {
+        throw error;
+      }
+
+      return mapNotificationRow(row);
+    }
+  }
+
   async loadOrInitConvoState(input: LoadOrInitConvoStateInput): Promise<RuntimeConvoStateRecord> {
     const existing = await this.findConvoState(input.clinicId, input.contactId);
 
@@ -914,6 +1235,10 @@ type MessageRow = Record<string, unknown> & {
   id: string;
 };
 
+type NotificationRow = Record<string, unknown> & {
+  id: string;
+};
+
 type ConvoStateRow = Record<string, unknown> & {
   contact_id: string;
   clinic_id: string;
@@ -993,6 +1318,16 @@ function mapMessageRow(row: MessageRow | undefined): RuntimeMessageRecord {
 
   return {
     id: row.id,
+  };
+}
+
+function mapNotificationRow(row: NotificationRow | undefined): RuntimeAdminNotificationRecord {
+  if (row === undefined) {
+    throw new Error('Expected notification row');
+  }
+
+  return {
+    notification_id: row.id,
   };
 }
 
