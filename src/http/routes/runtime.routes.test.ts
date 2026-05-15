@@ -10,6 +10,7 @@ import type {
   RuntimeExternalAppointmentRecord,
   RuntimeTurnRepository,
   SaveInboundUserMessageInput,
+  SaveOutboundAssistantMessageInput,
 } from '../../domain/runtime/runtimeTurnService.js';
 import {
   NoopRuntimeAIClient,
@@ -246,6 +247,179 @@ describe('runtime routes', () => {
         },
       });
       expect(bookingApplyService.calls).toEqual([]);
+    } finally {
+      await app.close();
+    }
+  });
+
+
+  it('saves outbound assistant message on successful AI draft reply with runtime meta', async () => {
+    const repository = new FakeRuntimeTurnRepository();
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'faq',
+      requested_action: 'answer_faq',
+      reply_draft: 'Консультация стоит 500 Kč.',
+    }));
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, {
+      runtimeTurnService: new RuntimeTurnService(repository, aiClient),
+    });
+
+    try {
+      const response = await app.inject({ method: 'POST', url: '/runtime/turn', payload: validPayload });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        reply_text: 'Консультация стоит 500 Kč.',
+        side_effects: [],
+        debug: {
+          reply_source: 'ai_draft',
+          outbound_message_id: '77777777-7777-7777-7777-777777777777',
+        },
+      });
+      expect(repository.operationOrder).toEqual(['saveInboundUserMessage', 'saveOutboundAssistantMessage']);
+      expect(repository.calls.outboundMessage).toMatchObject({
+        clinicId: '11111111-1111-1111-1111-111111111111',
+        contactId: '22222222-2222-2222-2222-222222222222',
+        caseId: null,
+        channel: 'telegram',
+        text: 'Консультация стоит 500 Kč.',
+        replyToMessageId: '44444444-4444-4444-4444-444444444444',
+        meta: {
+          source: 'runtime_turn',
+          reply_source: 'ai_draft',
+          prompt_version: 'runtime-ai-extraction-v1',
+          policy_decision: {
+            reason: 'no_booking_for_faq',
+          },
+          booking: null,
+        },
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('saves outbound assistant message when reply comes from booking_result', async () => {
+    const repository = new FakeRuntimeTurnRepository({ cases: [makeCase()] });
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'availability_request',
+      requested_action: 'check_availability',
+      reply_draft: 'AI draft must not be final booking reply.',
+      booking: {
+        preferred_date_iso: '2026-05-16',
+        preferred_weekday: null,
+        time_of_day: 'morning',
+        patient_confirmed_proposed_slot: false,
+        patient_rejected_proposed_slot: false,
+        selected_hold_id: null,
+      },
+    }));
+    const bookingApplyService = new FakeBookingApplyService(awaitingConfirmationResponse());
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, {
+      runtimeTurnService: new RuntimeTurnService(repository, aiClient, bookingApplyService),
+    });
+
+    try {
+      const response = await app.inject({ method: 'POST', url: '/runtime/turn', payload: validPayload });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        reply_text: 'Есть окно 16.05.2026, 09:00. Подтверждаем?',
+        side_effects: [],
+        debug: {
+          reply_source: 'booking_result',
+          outbound_message_id: '77777777-7777-7777-7777-777777777777',
+        },
+      });
+      expect(repository.calls.outboundMessage).toMatchObject({
+        caseId: '55555555-5555-5555-5555-555555555555',
+        text: 'Есть окно 16.05.2026, 09:00. Подтверждаем?',
+        meta: {
+          source: 'runtime_turn',
+          reply_source: 'booking_result',
+          prompt_version: 'runtime-ai-extraction-v1',
+          policy_decision: {
+            reason: 'availability_request_with_service_and_date',
+          },
+          booking: {
+            booking_status: 'awaiting_patient_confirmation',
+            booking_action: 'propose_slot',
+            reason: 'slot_proposed',
+          },
+        },
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('saves outbound assistant message with current case_id when a case exists', async () => {
+    const repository = new FakeRuntimeTurnRepository({
+      cases: [makeCase({ id: '55555555-5555-5555-5555-555555555555' })],
+    });
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, {
+      runtimeTurnService: new RuntimeTurnService(repository),
+    });
+
+    try {
+      const response = await app.inject({ method: 'POST', url: '/runtime/turn', payload: validPayload });
+
+      expect(response.statusCode).toBe(200);
+      expect(repository.calls.outboundMessage?.caseId).toBe('55555555-5555-5555-5555-555555555555');
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('saves outbound assistant message with null case_id when no case exists', async () => {
+    const repository = new FakeRuntimeTurnRepository();
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, {
+      runtimeTurnService: new RuntimeTurnService(repository),
+    });
+
+    try {
+      const response = await app.inject({ method: 'POST', url: '/runtime/turn', payload: validPayload });
+
+      expect(response.statusCode).toBe(200);
+      expect(repository.calls.outboundMessage?.caseId).toBeNull();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('returns reply_text when outbound persistence fails and records safe debug error', async () => {
+    const repository = new FakeRuntimeTurnRepository({ failOutboundPersistence: true });
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'faq',
+      requested_action: 'answer_faq',
+      reply_draft: 'Консультация стоит 500 Kč.',
+    }));
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, {
+      runtimeTurnService: new RuntimeTurnService(repository, aiClient),
+    });
+
+    try {
+      const response = await app.inject({ method: 'POST', url: '/runtime/turn', payload: validPayload });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        reply_text: 'Консультация стоит 500 Kč.',
+        side_effects: [],
+        debug: {
+          reply_source: 'ai_draft',
+          outbound_persistence_error: {
+            code: 'outbound_persistence_failed',
+            message: 'Outbound assistant message persistence failed.',
+          },
+        },
+      });
+      expect(response.json().debug.outbound_message_id).toBeUndefined();
+      expect(repository.operationOrder).toEqual(['saveInboundUserMessage', 'saveOutboundAssistantMessage']);
     } finally {
       await app.close();
     }
@@ -507,6 +681,8 @@ describe('runtime routes', () => {
         debug: { reply_source: 'booking_result' },
       });
       expect(response.json().reply_text).toContain('Администратор проверит');
+      expect(response.json().side_effects).toEqual([]);
+      expect(repository.mutationCalls).toEqual([]);
     } finally {
       await app.close();
     }
@@ -941,6 +1117,8 @@ describe('runtime routes', () => {
         },
       });
       expect(repository.calls).toEqual({ clinicCode: 'inactive_clinic' });
+      expect(repository.calls.outboundMessage).toBeUndefined();
+      expect(repository.operationOrder).toEqual([]);
       expect(repository.mutationCalls).toEqual([]);
     } finally {
       await app.close();
@@ -968,6 +1146,8 @@ describe('runtime routes', () => {
       expect(response.statusCode).toBe(400);
       expect(response.json()).toMatchObject({ error: { code: 'validation_failed' } });
       expect(repository.calls).toEqual({});
+      expect(repository.calls.outboundMessage).toBeUndefined();
+      expect(repository.operationOrder).toEqual([]);
       expect(repository.mutationCalls).toEqual([]);
     } finally {
       await app.close();
@@ -980,6 +1160,7 @@ interface FakeRuntimeTurnRepositoryOptions {
   cases?: RuntimeCaseRecord[];
   activeHold?: RuntimeExternalAppointmentRecord | null;
   latestAppointment?: RuntimeExternalAppointmentRecord | null;
+  failOutboundPersistence?: boolean;
 }
 
 class FakeRuntimeTurnRepository implements RuntimeTurnRepository {
@@ -987,11 +1168,14 @@ class FakeRuntimeTurnRepository implements RuntimeTurnRepository {
 
   readonly mutationCalls: string[] = [];
 
+  readonly operationOrder: string[] = [];
+
   readonly calls: {
     clinicCode?: string;
     contact?: GetOrCreateRuntimeContactInput;
     inboundEvent?: RegisterInboundEventInput;
     message?: SaveInboundUserMessageInput;
+    outboundMessage?: SaveOutboundAssistantMessageInput;
     convoState?: LoadOrInitConvoStateInput;
     cases?: { clinicId: string; contactId: string };
     activeHold?: { clinicId: string; contactId: string; caseId: string | null };
@@ -1036,9 +1220,23 @@ class FakeRuntimeTurnRepository implements RuntimeTurnRepository {
 
   async saveInboundUserMessage(input: SaveInboundUserMessageInput) {
     this.calls.message = input;
+    this.operationOrder.push('saveInboundUserMessage');
 
     return {
       id: '44444444-4444-4444-4444-444444444444',
+    };
+  }
+
+  async saveOutboundAssistantMessage(input: SaveOutboundAssistantMessageInput) {
+    this.calls.outboundMessage = input;
+    this.operationOrder.push('saveOutboundAssistantMessage');
+
+    if (this.options.failOutboundPersistence === true) {
+      throw new Error('outbound insert failed');
+    }
+
+    return {
+      id: '77777777-7777-7777-7777-777777777777',
     };
   }
 

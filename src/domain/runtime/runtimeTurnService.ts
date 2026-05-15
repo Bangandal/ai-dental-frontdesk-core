@@ -13,6 +13,7 @@ import {
 } from './runtimeAiClient.js';
 import { buildRuntimePrompt } from './runtimePrompt.js';
 import { decideRuntimeAction } from './runtimePolicy.js';
+import { buildReplyFromBookingResult, type RuntimeReplySource } from './runtimeReplyBuilder.js';
 
 export interface RuntimeClinicRecord {
   id: string;
@@ -161,6 +162,17 @@ export interface SaveInboundUserMessageInput {
   meta: Record<string, unknown>;
 }
 
+export interface SaveOutboundAssistantMessageInput {
+  clinicId: string;
+  contactId: string;
+  caseId: string | null;
+  channel: string;
+  text: string;
+  traceId: string;
+  replyToMessageId?: string | null;
+  meta: Record<string, unknown>;
+}
+
 export interface LoadOrInitConvoStateInput {
   clinicId: string;
   contactId: string;
@@ -172,6 +184,7 @@ export interface RuntimeTurnRepository {
   getOrCreateContact(input: GetOrCreateRuntimeContactInput): Promise<RuntimeContactRecord>;
   registerInboundEvent(input: RegisterInboundEventInput): Promise<RuntimeInboundEventRecord>;
   saveInboundUserMessage(input: SaveInboundUserMessageInput): Promise<RuntimeMessageRecord>;
+  saveOutboundAssistantMessage(input: SaveOutboundAssistantMessageInput): Promise<RuntimeMessageRecord>;
   loadOrInitConvoState(input: LoadOrInitConvoStateInput): Promise<RuntimeConvoStateRecord>;
   listRecentCases(clinicId: string, contactId: string): Promise<RuntimeCaseRecord[]>;
   findLatestHeldAppointmentForContactOrCase(
@@ -310,6 +323,7 @@ export class RuntimeTurnService {
       debug.ai_model = this.aiClient.model;
     }
     let replyText = RUNTIME_AI_SAFE_FALLBACK_REPLY;
+    let replySource: RuntimeReplySource = 'safe_fallback';
     let bookingResult: BookingApplyResponse | null = null;
 
     try {
@@ -341,24 +355,30 @@ export class RuntimeTurnService {
         try {
           bookingResult = await this.bookingApplyService.apply(policyDecision.booking_request);
           debug.booking_result = bookingResult;
-          replyText = buildReplyFromBookingResult(bookingResult);
-          debug.reply_source = 'booking_result';
+          const replyDecision = buildReplyFromBookingResult(bookingResult);
+          replyText = replyDecision.reply_text;
+          replySource = replyDecision.reply_source;
+          debug.reply_source = replySource;
         } catch (error) {
           debug.booking_error = formatBookingApplyError(error);
-          debug.reply_source = 'booking_error';
+          replySource = 'booking_error';
+          debug.reply_source = replySource;
           replyText = 'Не удалось автоматически проверить запись. Администратор проверит вручную и свяжется с вами.';
         }
       } else if (policyDecision.should_call_booking && this.bookingApplyService === undefined) {
-        debug.reply_source = 'safe_fallback';
+        replySource = 'safe_fallback';
+        debug.reply_source = replySource;
         debug.booking_request = policyDecision.booking_request;
         debug.booking_error = { code: 'booking_apply_service_unavailable' };
         replyText = RUNTIME_AI_SAFE_FALLBACK_REPLY;
       } else if (policyDecision.reply_text !== undefined) {
         replyText = policyDecision.reply_text;
-        debug.reply_source = 'policy';
+        replySource = 'policy';
+        debug.reply_source = replySource;
       } else {
         replyText = aiOutput.reply_draft ?? RUNTIME_AI_SAFE_FALLBACK_REPLY;
-        debug.reply_source = aiOutput.reply_draft === null ? 'safe_fallback' : 'ai_draft';
+        replySource = aiOutput.reply_draft === null ? 'safe_fallback' : 'ai_draft';
+        debug.reply_source = replySource;
       }
     } catch (error) {
       debug.ai_error = formatRuntimeAIError(error);
@@ -375,7 +395,30 @@ export class RuntimeTurnService {
         user_text: input.text,
       });
       debug.policy_decision = policyDecision;
-      debug.reply_source = 'safe_fallback';
+      replySource = 'safe_fallback';
+      debug.reply_source = replySource;
+    }
+
+    try {
+      const outboundMessage = await this.repository.saveOutboundAssistantMessage({
+        clinicId: clinic.id,
+        contactId: contact.id,
+        caseId: caseContext.current_case_id,
+        channel: input.channel,
+        text: replyText,
+        traceId,
+        replyToMessageId: userMessage.id,
+        meta: buildOutboundAssistantMessageMeta({
+          traceId,
+          replySource,
+          promptVersion: prompt.prompt_version,
+          policyDecision: debug.policy_decision,
+          bookingResult,
+        }),
+      });
+      debug.outbound_message_id = outboundMessage.id;
+    } catch (error) {
+      debug.outbound_persistence_error = formatOutboundPersistenceError(error);
     }
 
     return {
@@ -391,38 +434,52 @@ export class RuntimeTurnService {
   }
 }
 
-function buildReplyFromBookingResult(bookingResult: BookingApplyResponse): string {
-  if (bookingResult.booking_status === 'awaiting_patient_confirmation') {
-    return `Есть окно ${bookingResult.proposed_slot.label}. Подтверждаем?`;
-  }
-
-  if (bookingResult.booking_status === 'no_slots') {
-    return bookingResult.reply_text_override;
-  }
-
-  if (bookingResult.booking_status === 'booked_pending_admin_confirmation') {
-    return `Запрос на запись ${bookingResult.appointment.label} зафиксирован. Администратор проверит и подтвердит запись.`;
-  }
-
-  if (bookingResult.booking_status === 'external_write_failed') {
-    return bookingResult.reply_text_override;
-  }
-
-  if (bookingResult.booking_status === 'not_implemented') {
-    if (bookingResult.booking_action === 'cancel_hold') {
-      return 'Хорошо, это время не будем использовать. Подскажите, пожалуйста, другой удобный день или время.';
-    }
-
-    return bookingResult.reply_text_override;
-  }
-
-  return RUNTIME_AI_SAFE_FALLBACK_REPLY;
-}
-
 function formatBookingApplyError(_error: unknown): Record<string, string> {
   return {
     code: 'booking_apply_failed',
     message: 'Booking apply failed.',
+  };
+}
+
+interface BuildOutboundAssistantMessageMetaInput {
+  traceId: string;
+  replySource: RuntimeReplySource;
+  promptVersion: string;
+  policyDecision: unknown;
+  bookingResult: BookingApplyResponse | null;
+}
+
+function buildOutboundAssistantMessageMeta(input: BuildOutboundAssistantMessageMetaInput): Record<string, unknown> {
+  return {
+    source: 'runtime_turn',
+    trace_id: input.traceId,
+    reply_source: input.replySource,
+    prompt_version: input.promptVersion,
+    policy_decision: {
+      reason: readPolicyDecisionReason(input.policyDecision),
+    },
+    booking: input.bookingResult === null ? null : {
+      booking_status: input.bookingResult.booking_status,
+      booking_action: input.bookingResult.booking_action,
+      reason: input.bookingResult.reason,
+    },
+  };
+}
+
+function readPolicyDecisionReason(policyDecision: unknown): string | null {
+  if (policyDecision === null || typeof policyDecision !== 'object' || Array.isArray(policyDecision)) {
+    return null;
+  }
+
+  const reason = (policyDecision as Record<string, unknown>).reason;
+
+  return typeof reason === 'string' ? reason : null;
+}
+
+function formatOutboundPersistenceError(_error: unknown): Record<string, string> {
+  return {
+    code: 'outbound_persistence_failed',
+    message: 'Outbound assistant message persistence failed.',
   };
 }
 
@@ -597,6 +654,42 @@ export class PgRuntimeTurnRepository implements RuntimeTurnRepository {
         input.text,
         input.providerMessageId,
         JSON.stringify(input.meta),
+      ],
+    );
+
+    return mapMessageRow(result.rows[0]);
+  }
+
+  async saveOutboundAssistantMessage(input: SaveOutboundAssistantMessageInput): Promise<RuntimeMessageRecord> {
+    const result = await this.db.query<MessageRow>(
+      `insert into core.messages (
+         clinic_id,
+         contact_id,
+         lead_id,
+         case_id,
+         direction,
+         role,
+         channel,
+         text,
+         message_type,
+         status,
+         provider_message_id,
+         reply_to_message_id,
+         meta
+       )
+       values ($1, $2, null, $3, 'outbound', 'assistant', $4, $5, 'text', 'created', null, $6::uuid, $7::jsonb)
+       returning id`,
+      [
+        input.clinicId,
+        input.contactId,
+        input.caseId,
+        input.channel,
+        input.text,
+        input.replyToMessageId ?? null,
+        JSON.stringify({
+          ...input.meta,
+          trace_id: input.traceId,
+        }),
       ],
     );
 
