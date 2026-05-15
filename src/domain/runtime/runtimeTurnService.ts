@@ -3,6 +3,14 @@ import { randomUUID } from 'node:crypto';
 import { AppointmentStatus } from '../appointments/appointmentStatus.js';
 import { CaseStatus } from '../cases/caseStatus.js';
 import type { RuntimeTurnInput, RuntimeTurnResult } from './runtimeContracts.js';
+import {
+  formatRuntimeAIError,
+  NoopRuntimeAIClient,
+  parseRuntimeAIOutput,
+  RUNTIME_AI_SAFE_FALLBACK_REPLY,
+  type RuntimeAIClient,
+} from './runtimeAiClient.js';
+import { buildRuntimePrompt } from './runtimePrompt.js';
 
 export interface RuntimeClinicRecord {
   id: string;
@@ -200,7 +208,10 @@ export class RuntimeClinicNotFoundError extends Error {
 }
 
 export class RuntimeTurnService {
-  constructor(private readonly repository: RuntimeTurnRepository) {}
+  constructor(
+    private readonly repository: RuntimeTurnRepository,
+    private readonly aiClient: RuntimeAIClient = new NoopRuntimeAIClient(),
+  ) {}
 
   async handleTurn(input: RuntimeTurnInput): Promise<RuntimeTurnResult> {
     const traceId = randomUUID();
@@ -265,22 +276,49 @@ export class RuntimeTurnService {
       caseContext.current_case_id,
     );
 
+    const prompt = buildRuntimePrompt({
+      traceId,
+      clinic,
+      contact,
+      turn: input,
+      convoState,
+      caseContext,
+      bookingContext,
+    });
+    const debug: Record<string, unknown> = {
+      inbound_event_id: inboundEvent.id,
+      user_message_id: userMessage.id,
+      state_version: convoState.stateVersion,
+      duplicate: inboundEvent.isDuplicate,
+      case_context: caseContext,
+      booking_context: bookingContext,
+      prompt_version: prompt.prompt_version,
+    };
+    let replyText = RUNTIME_AI_SAFE_FALLBACK_REPLY;
+
+    try {
+      const rawAIOutput = await this.aiClient.extract({
+        trace_id: traceId,
+        prompt_version: prompt.prompt_version,
+        system_prompt: prompt.system_prompt,
+        context: prompt.context,
+      });
+      const aiOutput = parseRuntimeAIOutput(rawAIOutput);
+      debug.ai_output = aiOutput;
+      replyText = aiOutput.reply_draft ?? RUNTIME_AI_SAFE_FALLBACK_REPLY;
+    } catch (error) {
+      debug.ai_error = formatRuntimeAIError(error);
+    }
+
     return {
       trace_id: traceId,
-      reply_text: 'Runtime endpoint is wired.',
+      reply_text: replyText,
       clinic_id: clinic.id,
       contact_id: contact.id,
       case_id: caseContext.current_case_id,
       booking_result: null,
       side_effects: [],
-      debug: {
-        inbound_event_id: inboundEvent.id,
-        user_message_id: userMessage.id,
-        state_version: convoState.stateVersion,
-        duplicate: inboundEvent.isDuplicate,
-        case_context: caseContext,
-        booking_context: bookingContext,
-      },
+      debug,
     };
   }
 }
