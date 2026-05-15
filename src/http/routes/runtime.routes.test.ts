@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { BookingApplyRequest, BookingApplyResponse } from '../../domain/booking/bookingApply.js';
 import type {
+  CreateAdminNotificationInput,
   GetOrCreateRuntimeContactInput,
   LoadOrInitConvoStateInput,
   RegisterInboundEventInput,
@@ -1091,6 +1092,336 @@ describe('runtime routes', () => {
     }
   });
 
+
+  it('creates pending admin notification side_effect for booked_pending_admin_confirmation booking_result', async () => {
+    const activeHold = makeAppointment({ dedupeKey: 'hold-key-1' });
+    const repository = new FakeRuntimeTurnRepository({
+      activeHold,
+      latestAppointment: activeHold,
+      adminRecipient: '999-admin-chat',
+    });
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'patient_confirmation',
+      requested_action: 'confirm_slot',
+      booking: {
+        preferred_date_iso: null,
+        preferred_weekday: null,
+        time_of_day: null,
+        patient_confirmed_proposed_slot: true,
+        patient_rejected_proposed_slot: false,
+        selected_hold_id: 'hold-key-1',
+      },
+    }));
+    const bookingApplyService = new FakeBookingApplyService(confirmedResponse());
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, {
+      runtimeTurnService: new RuntimeTurnService(repository, aiClient, bookingApplyService),
+    });
+
+    try {
+      const response = await app.inject({ method: 'POST', url: '/runtime/turn', payload: { ...validPayload, text: 'да подтверждаю' } });
+      const body = response.json();
+
+      expect(response.statusCode).toBe(200);
+      expect(repository.operationOrder).toEqual([
+        'saveInboundUserMessage',
+        'saveOutboundAssistantMessage',
+        'createAdminNotification',
+      ]);
+      expect(repository.calls.notification).toMatchObject({
+        clinicId: '11111111-1111-1111-1111-111111111111',
+        contactId: '22222222-2222-2222-2222-222222222222',
+        caseId: null,
+        leadId: null,
+        channel: 'telegram',
+        recipient: '999-admin-chat',
+        templateKey: 'runtime_admin_attention',
+        payload: {
+          contact_id: '22222222-2222-2222-2222-222222222222',
+          user_text: 'да подтверждаю',
+          reply_text: body.reply_text,
+          reason: 'appointment_confirmed',
+          trigger: 'booking_result_booked_pending_admin_confirmation',
+          booking_result: {
+            booking_action: 'confirm_slot',
+            booking_status: 'booked_pending_admin_confirmation',
+            appointment_id: '66666666-6666-6666-6666-666666666666',
+            proposed_slot: {
+              label: '16.05.2026, 09:00',
+              start_at: '2026-05-16T07:00:00.000Z',
+            },
+          },
+          contact: {
+            username: 'Mishae_l',
+            first_name: 'Light',
+            last_name: null,
+            chat_id: '8054104741',
+            external_user_id: '8054104741',
+            channel: 'telegram',
+          },
+        },
+      });
+      expect(repository.calls.notification?.dedupeKey).toContain(`runtime_admin_notification:${body.trace_id}:booking_result_booked_pending_admin_confirmation`);
+      expect(body).toMatchObject({
+        side_effects: [{
+          type: 'admin_notification',
+          channel: 'telegram',
+          notification_id: '88888888-8888-8888-8888-888888888888',
+          recipient: '999-admin-chat',
+          template_key: 'runtime_admin_attention',
+          payload: {
+            trigger: 'booking_result_booked_pending_admin_confirmation',
+            reason: 'appointment_confirmed',
+          },
+        }],
+        debug: {
+          admin_notification: {
+            notification_id: '88888888-8888-8888-8888-888888888888',
+            trigger: 'booking_result_booked_pending_admin_confirmation',
+          },
+        },
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('creates admin notification for external_write_failed booking_result', async () => {
+    const activeHold = makeAppointment({ dedupeKey: 'hold-key-1' });
+    const repository = new FakeRuntimeTurnRepository({ cases: [makeCase()], activeHold, latestAppointment: activeHold, adminRecipient: '999-admin-chat' });
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'patient_confirmation',
+      requested_action: 'confirm_slot',
+      booking: {
+        preferred_date_iso: null,
+        preferred_weekday: null,
+        time_of_day: null,
+        patient_confirmed_proposed_slot: true,
+        patient_rejected_proposed_slot: false,
+        selected_hold_id: 'hold-key-1',
+      },
+    }));
+    const bookingApplyService = new FakeBookingApplyService(externalWriteFailedResponse());
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, {
+      runtimeTurnService: new RuntimeTurnService(repository, aiClient, bookingApplyService),
+    });
+
+    try {
+      const response = await app.inject({ method: 'POST', url: '/runtime/turn', payload: validPayload });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        booking_result: { booking_status: 'external_write_failed' },
+        side_effects: [{ payload: { trigger: 'booking_result_external_write_failed' } }],
+      });
+      expect(repository.calls.notification).toMatchObject({ payload: { reason: 'external_write_failed' } });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('does not create admin notification for no_slots booking_result', async () => {
+    const repository = new FakeRuntimeTurnRepository({ cases: [makeCase()], adminRecipient: '999-admin-chat' });
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'availability_request',
+      requested_action: 'check_availability',
+      booking: { preferred_date_iso: '2026-05-16', preferred_weekday: null, time_of_day: 'any', patient_confirmed_proposed_slot: false, patient_rejected_proposed_slot: false, selected_hold_id: null },
+    }));
+    const bookingApplyService = new FakeBookingApplyService(noSlotsResponse());
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, { runtimeTurnService: new RuntimeTurnService(repository, aiClient, bookingApplyService) });
+
+    try {
+      const response = await app.inject({ method: 'POST', url: '/runtime/turn', payload: validPayload });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json().side_effects).toEqual([]);
+      expect(repository.calls.notification).toBeUndefined();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('does not create admin notification for awaiting_patient_confirmation proposed hold', async () => {
+    const repository = new FakeRuntimeTurnRepository({ cases: [makeCase()], adminRecipient: '999-admin-chat' });
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'availability_request',
+      requested_action: 'check_availability',
+      booking: { preferred_date_iso: '2026-05-16', preferred_weekday: null, time_of_day: 'morning', patient_confirmed_proposed_slot: false, patient_rejected_proposed_slot: false, selected_hold_id: null },
+    }));
+    const bookingApplyService = new FakeBookingApplyService(awaitingConfirmationResponse());
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, { runtimeTurnService: new RuntimeTurnService(repository, aiClient, bookingApplyService) });
+
+    try {
+      const response = await app.inject({ method: 'POST', url: '/runtime/turn', payload: validPayload });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json().side_effects).toEqual([]);
+      expect(repository.calls.notification).toBeUndefined();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('creates admin notification for booking_error when admin recipient is configured', async () => {
+    const repository = new FakeRuntimeTurnRepository({ cases: [makeCase()], adminRecipient: '999-admin-chat' });
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'availability_request',
+      requested_action: 'check_availability',
+      booking: { preferred_date_iso: '2026-05-16', preferred_weekday: null, time_of_day: 'any', patient_confirmed_proposed_slot: false, patient_rejected_proposed_slot: false, selected_hold_id: null },
+    }));
+    const bookingApplyService = new ThrowingBookingApplyService(new Error('database connection failed'));
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, { runtimeTurnService: new RuntimeTurnService(repository, aiClient, bookingApplyService) });
+
+    try {
+      const response = await app.inject({ method: 'POST', url: '/runtime/turn', payload: validPayload });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        reply_text: 'Не удалось автоматически проверить запись. Администратор проверит вручную и свяжется с вами.',
+        side_effects: [{ payload: { trigger: 'booking_error', reason: 'booking_apply_failed' } }],
+      });
+      expect(repository.calls.notification).toBeDefined();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('creates admin notification when AI handoff_recommended is true', async () => {
+    const repository = new FakeRuntimeTurnRepository({ adminRecipient: '999-admin-chat' });
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'booking',
+      requested_action: 'clarify',
+      handoff_recommended: true,
+      reply_draft: 'Передам администратору.',
+    }));
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, { runtimeTurnService: new RuntimeTurnService(repository, aiClient) });
+
+    try {
+      const response = await app.inject({ method: 'POST', url: '/runtime/turn', payload: validPayload });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({ side_effects: [{ payload: { trigger: 'ai_handoff_recommended' } }] });
+      expect(repository.calls.notification).toBeDefined();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('creates admin notification for urgent conversation_intent', async () => {
+    const repository = new FakeRuntimeTurnRepository({ notificationSettings: { notifications: { admin_telegram_chat_id: 123456 } } });
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'urgent',
+      requested_action: 'clarify',
+      reply_draft: 'Сейчас передам администратору.',
+    }));
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, { runtimeTurnService: new RuntimeTurnService(repository, aiClient) });
+
+    try {
+      const response = await app.inject({ method: 'POST', url: '/runtime/turn', payload: validPayload });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({ side_effects: [{ recipient: '123456', payload: { trigger: 'ai_urgent_intent' } }] });
+      expect(repository.calls.notification).toMatchObject({ recipient: '123456' });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('does not create admin notification for pure FAQ even when admin recipient is configured', async () => {
+    const repository = new FakeRuntimeTurnRepository({ adminRecipient: '999-admin-chat' });
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'faq',
+      requested_action: 'answer_faq',
+      reply_draft: 'Консультация стоит 500 Kč.',
+    }));
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, { runtimeTurnService: new RuntimeTurnService(repository, aiClient) });
+
+    try {
+      const response = await app.inject({ method: 'POST', url: '/runtime/turn', payload: validPayload });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json().side_effects).toEqual([]);
+      expect(repository.calls.notification).toBeUndefined();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('skips admin notification safely when recipient is not configured', async () => {
+    const activeHold = makeAppointment({ dedupeKey: 'hold-key-1' });
+    const repository = new FakeRuntimeTurnRepository({ activeHold, latestAppointment: activeHold });
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'patient_confirmation',
+      requested_action: 'confirm_slot',
+      booking: { preferred_date_iso: null, preferred_weekday: null, time_of_day: null, patient_confirmed_proposed_slot: true, patient_rejected_proposed_slot: false, selected_hold_id: 'hold-key-1' },
+    }));
+    const bookingApplyService = new FakeBookingApplyService(confirmedResponse());
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, { runtimeTurnService: new RuntimeTurnService(repository, aiClient, bookingApplyService) });
+
+    try {
+      const response = await app.inject({ method: 'POST', url: '/runtime/turn', payload: validPayload });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        side_effects: [],
+        debug: { admin_notification_skipped: { reason: 'admin_recipient_not_configured' } },
+      });
+      expect(repository.calls.notification).toBeUndefined();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('does not crash runtime when notification persistence fails and still returns reply_text', async () => {
+    const activeHold = makeAppointment({ dedupeKey: 'hold-key-1' });
+    const repository = new FakeRuntimeTurnRepository({
+      activeHold,
+      latestAppointment: activeHold,
+      adminRecipient: '999-admin-chat',
+      failNotificationPersistence: true,
+    });
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'patient_confirmation',
+      requested_action: 'confirm_slot',
+      booking: { preferred_date_iso: null, preferred_weekday: null, time_of_day: null, patient_confirmed_proposed_slot: true, patient_rejected_proposed_slot: false, selected_hold_id: 'hold-key-1' },
+    }));
+    const bookingApplyService = new FakeBookingApplyService(confirmedResponse());
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, { runtimeTurnService: new RuntimeTurnService(repository, aiClient, bookingApplyService) });
+
+    try {
+      const response = await app.inject({ method: 'POST', url: '/runtime/turn', payload: validPayload });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        reply_text: 'Запрос на запись 16.05.2026, 09:00 зафиксирован. Администратор проверит и подтвердит запись.',
+        side_effects: [],
+        debug: { admin_notification_error: { code: 'admin_notification_persistence_failed' } },
+      });
+      expect(repository.calls.outboundMessage).toBeDefined();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('does not contain backend Telegram sending code in runtime implementation', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const runtimeSource = await readFile(new URL('../../domain/runtime/runtimeTurnService.ts', import.meta.url), 'utf8');
+    const routeSource = await readFile(new URL('./runtime.routes.ts', import.meta.url), 'utf8');
+
+    expect(`${runtimeSource}\n${routeSource}`).not.toContain('sendTelegram');
+    expect(`${runtimeSource}\n${routeSource}`).not.toContain('sendMessage(');
+    expect(`${runtimeSource}\n${routeSource}`).not.toContain('TelegramBot');
+  });
+
   it('returns clinic_not_found for unknown or inactive clinic_code', async () => {
     const repository = new FakeRuntimeTurnRepository({ clinicFound: false });
     const app = Fastify();
@@ -1161,6 +1492,9 @@ interface FakeRuntimeTurnRepositoryOptions {
   activeHold?: RuntimeExternalAppointmentRecord | null;
   latestAppointment?: RuntimeExternalAppointmentRecord | null;
   failOutboundPersistence?: boolean;
+  adminRecipient?: string | number | null;
+  notificationSettings?: Record<string, unknown>;
+  failNotificationPersistence?: boolean;
 }
 
 class FakeRuntimeTurnRepository implements RuntimeTurnRepository {
@@ -1180,6 +1514,7 @@ class FakeRuntimeTurnRepository implements RuntimeTurnRepository {
     cases?: { clinicId: string; contactId: string };
     activeHold?: { clinicId: string; contactId: string; caseId: string | null };
     latestAppointment?: { clinicId: string; contactId: string; caseId: string | null };
+    notification?: CreateAdminNotificationInput;
   } = {};
 
   async findActiveClinicByCode(code: string) {
@@ -1194,7 +1529,9 @@ class FakeRuntimeTurnRepository implements RuntimeTurnRepository {
       code,
       name: 'Clinic One',
       timezone: 'Europe/Prague',
-      settings: {},
+      settings: this.options.notificationSettings ?? (this.options.adminRecipient === undefined
+        ? {}
+        : { admin_telegram_chat_id: this.options.adminRecipient }),
     };
   }
 
@@ -1237,6 +1574,20 @@ class FakeRuntimeTurnRepository implements RuntimeTurnRepository {
 
     return {
       id: '77777777-7777-7777-7777-777777777777',
+    };
+  }
+
+  async createAdminNotification(input: CreateAdminNotificationInput) {
+    this.calls.notification = input;
+    this.operationOrder.push('createAdminNotification');
+    this.mutationCalls.push('createAdminNotification');
+
+    if (this.options.failNotificationPersistence === true) {
+      throw new Error('notification insert failed');
+    }
+
+    return {
+      notification_id: '88888888-8888-8888-8888-888888888888',
     };
   }
 
@@ -1365,6 +1716,29 @@ function noSlotsResponse(): BookingApplyResponse {
     should_notify_admin: false,
     reply_text_override: 'Свободных слотов по вашему запросу сейчас не нашёл. Подскажите другой день или время.',
     reason: 'no_slots_available',
+  };
+}
+
+
+function externalWriteFailedResponse(): BookingApplyResponse {
+  return {
+    booking_action: 'confirm_slot',
+    booking_status: 'external_write_failed',
+    appointment_id: '66666666-6666-6666-6666-666666666666',
+    appointment: {
+      appointment_id: '66666666-6666-6666-6666-666666666666',
+      case_id: null,
+      start_at: '2026-05-16T07:00:00.000Z',
+      end_at: '2026-05-16T07:30:00.000Z',
+      label: '16.05.2026, 09:00',
+      cell_range: 'C4',
+      sheet_name: 'Графік',
+      service_interest: 'консультация',
+      status: 'held',
+    },
+    should_notify_admin: true,
+    reply_text_override: 'Не удалось автоматически подтвердить запись. Я передам администратору для ручной проверки.',
+    reason: 'external_write_failed',
   };
 }
 
