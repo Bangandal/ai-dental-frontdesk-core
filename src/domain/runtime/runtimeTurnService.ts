@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import { AppointmentStatus } from '../appointments/appointmentStatus.js';
+import type { BookingApplyRequest, BookingApplyResponse } from '../booking/bookingApply.js';
 import { CaseStatus } from '../cases/caseStatus.js';
 import type { RuntimeTurnInput, RuntimeTurnResult } from './runtimeContracts.js';
 import {
@@ -11,6 +12,7 @@ import {
   type RuntimeAIClient,
 } from './runtimeAiClient.js';
 import { buildRuntimePrompt } from './runtimePrompt.js';
+import { decideRuntimeAction } from './runtimePolicy.js';
 
 export interface RuntimeClinicRecord {
   id: string;
@@ -207,10 +209,15 @@ export class RuntimeClinicNotFoundError extends Error {
   }
 }
 
+export interface RuntimeBookingApplyService {
+  apply(request: BookingApplyRequest): Promise<BookingApplyResponse>;
+}
+
 export class RuntimeTurnService {
   constructor(
     private readonly repository: RuntimeTurnRepository,
     private readonly aiClient: RuntimeAIClient = new NoopRuntimeAIClient(),
+    private readonly bookingApplyService?: RuntimeBookingApplyService,
   ) {}
 
   async handleTurn(input: RuntimeTurnInput): Promise<RuntimeTurnResult> {
@@ -303,6 +310,7 @@ export class RuntimeTurnService {
       debug.ai_model = this.aiClient.model;
     }
     let replyText = RUNTIME_AI_SAFE_FALLBACK_REPLY;
+    let bookingResult: BookingApplyResponse | null = null;
 
     try {
       const rawAIOutput = await this.aiClient.extract({
@@ -313,9 +321,54 @@ export class RuntimeTurnService {
       });
       const aiOutput = parseRuntimeAIOutput(rawAIOutput);
       debug.ai_output = aiOutput;
-      replyText = aiOutput.reply_draft ?? RUNTIME_AI_SAFE_FALLBACK_REPLY;
+      const policyDecision = decideRuntimeAction({
+        ai_output: aiOutput,
+        case_context: caseContext,
+        booking_context: bookingContext,
+        clinic,
+        contact_id: contact.id,
+        channel: input.channel,
+        meta: input.meta,
+        trace_id: traceId,
+        current_time_iso: new Date().toISOString(),
+        user_text: input.text,
+      });
+      debug.policy_decision = policyDecision;
+
+      if (policyDecision.should_call_booking && policyDecision.booking_request !== null && this.bookingApplyService !== undefined) {
+        debug.booking_request = policyDecision.booking_request;
+        bookingResult = await this.bookingApplyService.apply(policyDecision.booking_request);
+        debug.booking_result = bookingResult;
+        replyText = buildReplyFromBookingResult(bookingResult);
+        debug.reply_source = 'booking_result';
+      } else if (policyDecision.should_call_booking && this.bookingApplyService === undefined) {
+        debug.reply_source = 'safe_fallback';
+        debug.booking_request = policyDecision.booking_request;
+        debug.booking_error = { code: 'booking_apply_service_unavailable' };
+        replyText = RUNTIME_AI_SAFE_FALLBACK_REPLY;
+      } else if (policyDecision.reply_text !== undefined) {
+        replyText = policyDecision.reply_text;
+        debug.reply_source = 'policy';
+      } else {
+        replyText = aiOutput.reply_draft ?? RUNTIME_AI_SAFE_FALLBACK_REPLY;
+        debug.reply_source = aiOutput.reply_draft === null ? 'safe_fallback' : 'ai_draft';
+      }
     } catch (error) {
       debug.ai_error = formatRuntimeAIError(error);
+      const policyDecision = decideRuntimeAction({
+        ai_output: null,
+        case_context: caseContext,
+        booking_context: bookingContext,
+        clinic,
+        contact_id: contact.id,
+        channel: input.channel,
+        meta: input.meta,
+        trace_id: traceId,
+        current_time_iso: new Date().toISOString(),
+        user_text: input.text,
+      });
+      debug.policy_decision = policyDecision;
+      debug.reply_source = 'safe_fallback';
     }
 
     return {
@@ -324,11 +377,39 @@ export class RuntimeTurnService {
       clinic_id: clinic.id,
       contact_id: contact.id,
       case_id: caseContext.current_case_id,
-      booking_result: null,
+      booking_result: bookingResult as Record<string, unknown> | null,
       side_effects: [],
       debug,
     };
   }
+}
+
+function buildReplyFromBookingResult(bookingResult: BookingApplyResponse): string {
+  if (bookingResult.booking_status === 'awaiting_patient_confirmation') {
+    return `Есть окно ${bookingResult.proposed_slot.label}. Подтверждаем?`;
+  }
+
+  if (bookingResult.booking_status === 'no_slots') {
+    return bookingResult.reply_text_override;
+  }
+
+  if (bookingResult.booking_status === 'booked_pending_admin_confirmation') {
+    return `Запрос на запись ${bookingResult.appointment.label} зафиксирован. Администратор проверит и подтвердит запись.`;
+  }
+
+  if (bookingResult.booking_status === 'external_write_failed') {
+    return bookingResult.reply_text_override;
+  }
+
+  if (bookingResult.booking_status === 'not_implemented') {
+    if (bookingResult.booking_action === 'cancel_hold') {
+      return 'Хорошо, это время не будем использовать. Подскажите, пожалуйста, другой удобный день или время.';
+    }
+
+    return bookingResult.reply_text_override;
+  }
+
+  return RUNTIME_AI_SAFE_FALLBACK_REPLY;
 }
 
 export class PgRuntimeTurnRepository implements RuntimeTurnRepository {

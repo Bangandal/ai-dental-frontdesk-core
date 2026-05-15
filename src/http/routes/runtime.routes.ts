@@ -9,6 +9,9 @@ import {
   RuntimeClinicNotFoundError,
   RuntimeTurnService,
 } from '../../domain/runtime/runtimeTurnService.js';
+import { AppointmentLifecycleService } from '../../domain/appointments/appointmentLifecycle.js';
+import { PgAppointmentRepository } from '../../domain/appointments/appointmentRepository.js';
+import { BookingApplyService } from '../../domain/booking/bookingApply.js';
 import { runtimeTurnInputSchema } from '../../domain/runtime/runtimeContracts.js';
 
 export interface RuntimeRoutesOptions {
@@ -81,7 +84,15 @@ async function createDefaultRuntimeTurnService(): Promise<RuntimeTurnService> {
     openaiTimeoutMs: env.OPENAI_TIMEOUT_MS,
   });
 
-  defaultRuntimeTurnService = new RuntimeTurnService(new PgRuntimeTurnRepository(pool), aiClient);
+  const appointmentRepository = new PgAppointmentRepository(pool);
+  const appointmentLifecycle = new AppointmentLifecycleService({ repository: appointmentRepository });
+  const bookingApplyService = new BookingApplyService(appointmentLifecycle, appointmentRepository);
+
+  defaultRuntimeTurnService = new RuntimeTurnService(
+    new PgRuntimeTurnRepository(pool),
+    aiClient,
+    bookingApplyService,
+  );
 
   return defaultRuntimeTurnService;
 }
