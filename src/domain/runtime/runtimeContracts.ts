@@ -1,5 +1,8 @@
 import { z } from 'zod';
 
+import { runtimeAIOutputSchema } from './runtimeAiSchema.js';
+export { runtimeAIOutputSchema } from './runtimeAiSchema.js';
+
 export const runtimeMetaSchema = z.object({
   message_id: z.union([z.string(), z.number()]).optional(),
   update_id: z.union([z.string(), z.number()]).optional(),
@@ -33,63 +36,6 @@ export const runtimeTurnResultSchema = z.object({
   side_effects: z.array(runtimeSideEffectSchema),
   debug: z.record(z.unknown()).optional(),
 });
-
-export const runtimeAIOutputSchema = z.object({
-  reply_draft: z.string().nullable(),
-  conversation_intent: z.enum([
-    'greeting',
-    'faq',
-    'booking',
-    'availability_request',
-    'patient_confirmation',
-    'slot_rejected',
-    'objection',
-    'urgent',
-    'correction',
-    'off_topic',
-    'post_handoff_ack',
-    'follow_up',
-    'multi_patient_request',
-    'reschedule',
-    'cancel_appointment',
-    'unknown',
-  ]),
-  requested_action: z.enum([
-    'continue',
-    'ask_slot',
-    'answer_faq',
-    'handoff',
-    'complete_intake',
-    'clarify',
-    'greeting',
-    'stop',
-    'check_availability',
-    'propose_slot',
-    'await_confirmation',
-    'confirm_slot',
-    'reject_slot',
-    'create_appointment',
-  ]),
-  slot_updates: z.object({
-    name: z.string().nullable(),
-    service_interest: z.string().nullable(),
-    problem: z.string().nullable(),
-    phone: z.string().nullable(),
-    preferred_time: z.string().nullable(),
-    preferred_contact: z.string().nullable(),
-  }),
-  booking: z.object({
-    preferred_date_iso: z.string().nullable(),
-    preferred_weekday: z.string().nullable(),
-    time_of_day: z.enum(['morning', 'afternoon', 'evening', 'any']).nullable(),
-    patient_confirmed_proposed_slot: z.boolean(),
-    patient_rejected_proposed_slot: z.boolean(),
-    selected_hold_id: z.string().nullable(),
-  }),
-  handoff_recommended: z.boolean(),
-  kb_used: z.boolean(),
-  confidence: z.enum(['high', 'medium', 'low']),
-}).strict();
 
 export type RuntimeMeta = z.infer<typeof runtimeMetaSchema>;
 export type RuntimeTurnInput = z.infer<typeof runtimeTurnInputSchema>;

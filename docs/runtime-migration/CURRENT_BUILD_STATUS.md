@@ -24,3 +24,8 @@ Recommended commands if more memory/swap is available:
 
 NODE_OPTIONS="--max-old-space-size=1536" npm run typecheck
 NODE_OPTIONS="--max-old-space-size=1536" npm run build
+
+
+## OpenAI runtime manual test
+
+See `docs/runtime-migration/OPENAI_RUNTIME_TEST.md` for the PR 4B OpenAI runtime adapter manual curl test and required environment variables.
