@@ -56,6 +56,28 @@ describe('runtime routes', () => {
             current_case: { collected: { service_interest: 'консультация' } },
           },
           booking_context: { active_hold: null, latest_appointment: null },
+          output_contract: {
+            reply_draft: 'string|null',
+            slot_updates: {
+              name: 'string|null',
+              service_interest: 'string|null',
+              problem: 'string|null',
+              phone: 'string|null',
+              preferred_time: 'string|null',
+              preferred_contact: 'string|null',
+            },
+            booking: {
+              preferred_date_iso: 'string|null',
+              preferred_weekday: 'string|null',
+              time_of_day: 'morning|afternoon|evening|any|null',
+              patient_confirmed_proposed_slot: 'boolean',
+              patient_rejected_proposed_slot: 'boolean',
+              selected_hold_id: 'string|null',
+            },
+            handoff_recommended: 'boolean',
+            kb_used: 'boolean',
+            confidence: 'high|medium|low',
+          },
         },
       });
       expect(response.json()).toMatchObject({
