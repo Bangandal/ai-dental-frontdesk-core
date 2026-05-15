@@ -10,6 +10,8 @@ import type {
   RuntimeTurnRepository,
   SaveInboundUserMessageInput,
 } from '../../domain/runtime/runtimeTurnService.js';
+import { RUNTIME_AI_SAFE_FALLBACK_REPLY, type RuntimeAIClient, type RuntimeAIExtractionInput } from '../../domain/runtime/runtimeAiClient.js';
+import type { RuntimeAIOutput } from '../../domain/runtime/runtimeContracts.js';
 import { RuntimeTurnService } from '../../domain/runtime/runtimeTurnService.js';
 import { registerRuntimeRoutes } from './runtime.routes.js';
 
@@ -29,6 +31,167 @@ const validPayload = {
 } as const;
 
 describe('runtime routes', () => {
+  it('calls AI client with user_text, case_context, booking_context, and recent state', async () => {
+    const repository = new FakeRuntimeTurnRepository({
+      cases: [makeCase({ id: '55555555-5555-5555-5555-555555555555' })],
+    });
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({ reply_draft: 'Подскажите удобный день и время.' }));
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, {
+      runtimeTurnService: new RuntimeTurnService(repository, aiClient),
+    });
+
+    try {
+      const response = await app.inject({ method: 'POST', url: '/runtime/turn', payload: validPayload });
+
+      expect(response.statusCode).toBe(200);
+      expect(aiClient.calls).toHaveLength(1);
+      expect(aiClient.calls[0]).toMatchObject({
+        prompt_version: 'runtime-ai-extraction-v1',
+        context: {
+          user_text: validPayload.text,
+          convo_state: { state: {}, state_version: 1 },
+          case_context: {
+            current_case_id: '55555555-5555-5555-5555-555555555555',
+            current_case: { collected: { service_interest: 'консультация' } },
+          },
+          booking_context: { active_hold: null, latest_appointment: null },
+        },
+      });
+      expect(response.json()).toMatchObject({
+        reply_text: 'Подскажите удобный день и время.',
+        booking_result: null,
+        side_effects: [],
+        debug: {
+          prompt_version: 'runtime-ai-extraction-v1',
+          ai_output: { reply_draft: 'Подскажите удобный день и время.' },
+        },
+      });
+      expect(repository.mutationCalls).toEqual([]);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('returns safe fallback with ai_error when AI output is invalid', async () => {
+    const repository = new FakeRuntimeTurnRepository();
+    const aiClient = new FakeRuntimeAIClient({ reply_draft: 'missing required fields' });
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, {
+      runtimeTurnService: new RuntimeTurnService(repository, aiClient),
+    });
+
+    try {
+      const response = await app.inject({ method: 'POST', url: '/runtime/turn', payload: validPayload });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        reply_text: RUNTIME_AI_SAFE_FALLBACK_REPLY,
+        booking_result: null,
+        side_effects: [],
+        debug: {
+          prompt_version: 'runtime-ai-extraction-v1',
+          ai_error: { code: 'invalid_ai_output' },
+        },
+      });
+      expect(response.json().debug.ai_output).toBeUndefined();
+      expect(repository.mutationCalls).toEqual([]);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('includes availability AI output in debug without executing booking', async () => {
+    const repository = new FakeRuntimeTurnRepository({
+      cases: [makeCase({ collected: { service_interest: 'чистка' } })],
+    });
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'availability_request',
+      requested_action: 'check_availability',
+      reply_draft: 'Проверю возможность записи на это время.',
+      booking: {
+        preferred_date_iso: '2026-05-16',
+        preferred_weekday: null,
+        time_of_day: 'any',
+        patient_confirmed_proposed_slot: false,
+        patient_rejected_proposed_slot: false,
+        selected_hold_id: null,
+      },
+    }));
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, {
+      runtimeTurnService: new RuntimeTurnService(repository, aiClient),
+    });
+
+    try {
+      const response = await app.inject({ method: 'POST', url: '/runtime/turn', payload: validPayload });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        booking_result: null,
+        side_effects: [],
+        debug: {
+          ai_output: {
+            conversation_intent: 'availability_request',
+            requested_action: 'check_availability',
+            booking: { preferred_date_iso: '2026-05-16' },
+          },
+        },
+      });
+      expect(repository.mutationCalls).toEqual([]);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('recognizes active_hold confirmation in AI output without confirming booking', async () => {
+    const activeHold = makeAppointment({ dedupeKey: 'hold-key-1' });
+    const repository = new FakeRuntimeTurnRepository({ activeHold, latestAppointment: activeHold });
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'patient_confirmation',
+      requested_action: 'confirm_slot',
+      reply_draft: 'Спасибо, уточню этот вариант.',
+      booking: {
+        preferred_date_iso: null,
+        preferred_weekday: null,
+        time_of_day: null,
+        patient_confirmed_proposed_slot: true,
+        patient_rejected_proposed_slot: false,
+        selected_hold_id: 'hold-key-1',
+      },
+    }));
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, {
+      runtimeTurnService: new RuntimeTurnService(repository, aiClient),
+    });
+
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/runtime/turn',
+        payload: { ...validPayload, text: 'да, подтверждаю' },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        booking_result: null,
+        side_effects: [],
+        debug: {
+          ai_output: {
+            requested_action: 'confirm_slot',
+            booking: {
+              patient_confirmed_proposed_slot: true,
+              selected_hold_id: 'hold-key-1',
+            },
+          },
+        },
+      });
+      expect(repository.mutationCalls).toEqual([]);
+    } finally {
+      await app.close();
+    }
+  });
+
   it('returns case_id null with compact empty case and booking context when no case or hold exists', async () => {
     const repository = new FakeRuntimeTurnRepository();
     const app = Fastify();
@@ -45,7 +208,7 @@ describe('runtime routes', () => {
 
       expect(response.statusCode).toBe(200);
       expect(response.json()).toMatchObject({
-        reply_text: 'Runtime endpoint is wired.',
+        reply_text: RUNTIME_AI_SAFE_FALLBACK_REPLY,
         clinic_id: '11111111-1111-1111-1111-111111111111',
         contact_id: '22222222-2222-2222-2222-222222222222',
         case_id: null,
@@ -467,5 +630,56 @@ function makeAppointment(overrides: Partial<RuntimeExternalAppointmentRecord> = 
       },
     },
     ...overrides,
+  };
+}
+
+class FakeRuntimeAIClient implements RuntimeAIClient {
+  constructor(private readonly output: unknown) {}
+
+  readonly calls: RuntimeAIExtractionInput[] = [];
+
+  async extract(input: RuntimeAIExtractionInput): Promise<RuntimeAIOutput> {
+    this.calls.push(input);
+    return this.output as RuntimeAIOutput;
+  }
+}
+
+function validAIOutput(overrides: Partial<RuntimeAIOutput> = {}): RuntimeAIOutput {
+  const base: RuntimeAIOutput = {
+    reply_draft: null,
+    conversation_intent: 'unknown',
+    requested_action: 'clarify',
+    slot_updates: {
+      name: null,
+      service_interest: null,
+      problem: null,
+      phone: null,
+      preferred_time: null,
+      preferred_contact: null,
+    },
+    booking: {
+      preferred_date_iso: null,
+      preferred_weekday: null,
+      time_of_day: null,
+      patient_confirmed_proposed_slot: false,
+      patient_rejected_proposed_slot: false,
+      selected_hold_id: null,
+    },
+    handoff_recommended: false,
+    kb_used: false,
+    confidence: 'medium',
+  };
+
+  return {
+    ...base,
+    ...overrides,
+    slot_updates: {
+      ...base.slot_updates,
+      ...overrides.slot_updates,
+    },
+    booking: {
+      ...base.booking,
+      ...overrides.booking,
+    },
   };
 }

@@ -33,7 +33,7 @@
 ## AIOutput
 
 {
-  "reply_text": "string",
+  "reply_draft": "string|null",
   "slot_updates": {
     "name": null,
     "service_interest": null,
@@ -52,7 +52,6 @@
     "patient_rejected_proposed_slot": false,
     "selected_hold_id": null
   },
-  "booking_result": null,
   "handoff_recommended": false,
   "kb_used": false,
   "confidence": "high|medium|low"
