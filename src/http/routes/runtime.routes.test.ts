@@ -339,6 +339,51 @@ describe('runtime routes', () => {
     }
   });
 
+  it('does not call BookingApplyService when availability request only has preferredWeekday', async () => {
+    const repository = new FakeRuntimeTurnRepository({
+      cases: [makeCase({ collected: { service_interest: 'консультация' } })],
+    });
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'availability_request',
+      requested_action: 'check_availability',
+      reply_draft: 'AI draft should not trigger broad availability.',
+      booking: {
+        preferred_date_iso: null,
+        preferred_weekday: 'monday',
+        time_of_day: 'morning',
+        patient_confirmed_proposed_slot: false,
+        patient_rejected_proposed_slot: false,
+        selected_hold_id: null,
+      },
+    }));
+    const bookingApplyService = new FakeBookingApplyService(awaitingConfirmationResponse());
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, {
+      runtimeTurnService: new RuntimeTurnService(repository, aiClient, bookingApplyService),
+    });
+
+    try {
+      const response = await app.inject({ method: 'POST', url: '/runtime/turn', payload: validPayload });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        reply_text: 'Подскажите, пожалуйста, конкретную дату для проверки записи.',
+        booking_result: null,
+        side_effects: [],
+        debug: {
+          reply_source: 'policy',
+          policy_decision: {
+            should_call_booking: false,
+            reason: 'preferred_weekday_not_supported_for_booking',
+          },
+        },
+      });
+      expect(bookingApplyService.calls).toEqual([]);
+    } finally {
+      await app.close();
+    }
+  });
+
   it('does not call booking when availability request has date but missing service', async () => {
     const repository = new FakeRuntimeTurnRepository({ cases: [makeCase({ collected: {} })] });
     const aiClient = new FakeRuntimeAIClient(validAIOutput({

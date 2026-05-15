@@ -95,12 +95,20 @@ export function decideRuntimeAction(input: RuntimePolicyInput): RuntimePolicyDec
     });
   }
 
-  const hasPreferredDateOrWeekday = readNonEmpty(booking.preferred_date_iso) !== undefined
-    || readNonEmpty(booking.preferred_weekday) !== undefined;
+  const hasPreferredDate = readNonEmpty(booking.preferred_date_iso) !== undefined;
+  const hasPreferredWeekday = readNonEmpty(booking.preferred_weekday) !== undefined;
+  const hasPreferredDateOrWeekday = hasPreferredDate || hasPreferredWeekday;
   const isAvailabilityRequest = availabilityActions.has(aiOutput.requested_action)
     || aiOutput.conversation_intent === 'availability_request';
 
-  if (isAvailabilityRequest && hasPreferredDateOrWeekday) {
+  if (isAvailabilityRequest && !hasPreferredDate && hasPreferredWeekday) {
+    return {
+      ...noBooking('ask_concrete_date', 'preferred_weekday_not_supported_for_booking'),
+      reply_text: 'Подскажите, пожалуйста, конкретную дату для проверки записи.',
+    };
+  }
+
+  if (isAvailabilityRequest && hasPreferredDate) {
     const serviceInterest = readServiceInterest(input);
 
     if (serviceInterest === null) {
