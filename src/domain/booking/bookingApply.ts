@@ -18,6 +18,7 @@ export interface BookingApplyRequest {
   bookingAction: BookingAction;
   serviceInterest?: string | null;
   preferredDateIso?: string | null;
+  preferredWeekday?: string | null;
   timeOfDay: TimeOfDay;
   activeHoldId?: string | null;
   patientName?: string | null;

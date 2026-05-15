@@ -13,6 +13,7 @@ const bookingApplySchema = z.object({
   bookingAction: z.enum(['none', 'propose_slot', 'confirm_slot', 'cancel_hold']),
   serviceInterest: z.string().min(1).nullable().optional(),
   preferredDateIso: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
+  preferredWeekday: z.string().min(1).nullable().optional(),
   timeOfDay: z.enum(['morning', 'afternoon', 'evening', 'any']).default('any'),
   activeHoldId: z.string().min(1).nullable().optional(),
   patientName: z.string().min(1).nullable().optional(),
