@@ -11,6 +11,7 @@ import type {
   SaveInboundUserMessageInput,
 } from '../../domain/runtime/runtimeTurnService.js';
 import { RUNTIME_AI_SAFE_FALLBACK_REPLY, type RuntimeAIClient, type RuntimeAIExtractionInput } from '../../domain/runtime/runtimeAiClient.js';
+import { RuntimeAIProviderError } from '../../domain/runtime/openAiRuntimeClient.js';
 import type { RuntimeAIOutput } from '../../domain/runtime/runtimeContracts.js';
 import { RuntimeTurnService } from '../../domain/runtime/runtimeTurnService.js';
 import { registerRuntimeRoutes } from './runtime.routes.js';
@@ -35,7 +36,11 @@ describe('runtime routes', () => {
     const repository = new FakeRuntimeTurnRepository({
       cases: [makeCase({ id: '55555555-5555-5555-5555-555555555555' })],
     });
-    const aiClient = new FakeRuntimeAIClient(validAIOutput({ reply_draft: 'Подскажите удобный день и время.' }));
+    const aiClient = new FakeRuntimeAIClient(
+      validAIOutput({ reply_draft: 'Подскажите удобный день и время.' }),
+      'openai',
+      'gpt-test-runtime',
+    );
     const app = Fastify();
     await app.register(registerRuntimeRoutes, {
       runtimeTurnService: new RuntimeTurnService(repository, aiClient),
@@ -86,6 +91,8 @@ describe('runtime routes', () => {
         side_effects: [],
         debug: {
           prompt_version: 'runtime-ai-extraction-v1',
+          ai_provider: 'openai',
+          ai_model: 'gpt-test-runtime',
           ai_output: { reply_draft: 'Подскажите удобный день и время.' },
         },
       });
@@ -114,6 +121,45 @@ describe('runtime routes', () => {
         debug: {
           prompt_version: 'runtime-ai-extraction-v1',
           ai_error: { code: 'invalid_ai_output' },
+        },
+      });
+      expect(response.json().debug.ai_output).toBeUndefined();
+      expect(repository.mutationCalls).toEqual([]);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('returns safe fallback with safe ai_error when AI provider fails', async () => {
+    const repository = new FakeRuntimeTurnRepository();
+    const aiClient = new ThrowingRuntimeAIClient(
+      new RuntimeAIProviderError('OpenAI rate limit', 'openai_http_429', 'openai', 'gpt-test-runtime'),
+      'openai',
+      'gpt-test-runtime',
+    );
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, {
+      runtimeTurnService: new RuntimeTurnService(repository, aiClient),
+    });
+
+    try {
+      const response = await app.inject({ method: 'POST', url: '/runtime/turn', payload: validPayload });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        reply_text: RUNTIME_AI_SAFE_FALLBACK_REPLY,
+        booking_result: null,
+        side_effects: [],
+        debug: {
+          prompt_version: 'runtime-ai-extraction-v1',
+          ai_provider: 'openai',
+          ai_model: 'gpt-test-runtime',
+          ai_error: {
+            code: 'openai_http_429',
+            message: 'OpenAI rate limit',
+            provider: 'openai',
+            model: 'gpt-test-runtime',
+          },
         },
       });
       expect(response.json().debug.ai_output).toBeUndefined();
@@ -656,13 +702,30 @@ function makeAppointment(overrides: Partial<RuntimeExternalAppointmentRecord> = 
 }
 
 class FakeRuntimeAIClient implements RuntimeAIClient {
-  constructor(private readonly output: unknown) {}
+  constructor(
+    private readonly output: unknown,
+    readonly provider?: string,
+    readonly model?: string,
+  ) {}
 
   readonly calls: RuntimeAIExtractionInput[] = [];
 
   async extract(input: RuntimeAIExtractionInput): Promise<RuntimeAIOutput> {
     this.calls.push(input);
     return this.output as RuntimeAIOutput;
+  }
+}
+
+
+class ThrowingRuntimeAIClient implements RuntimeAIClient {
+  constructor(
+    private readonly error: Error,
+    readonly provider?: string,
+    readonly model?: string,
+  ) {}
+
+  async extract(): Promise<RuntimeAIOutput> {
+    throw this.error;
   }
 }
 

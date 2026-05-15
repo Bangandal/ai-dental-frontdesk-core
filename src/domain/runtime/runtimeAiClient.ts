@@ -10,6 +10,8 @@ export interface RuntimeAIExtractionInput {
 }
 
 export interface RuntimeAIClient {
+  readonly provider?: string;
+  readonly model?: string;
   extract(input: RuntimeAIExtractionInput): Promise<RuntimeAIOutput>;
 }
 
@@ -62,9 +64,11 @@ export function formatRuntimeAIError(error: unknown): Record<string, unknown> {
 
   if (error instanceof Error) {
     return {
-      code: 'ai_extraction_failed',
+      code: readErrorStringProperty(error, 'code') ?? 'ai_extraction_failed',
       message: error.message,
       name: error.name,
+      provider: readErrorStringProperty(error, 'provider'),
+      model: readErrorStringProperty(error, 'model'),
     };
   }
 
@@ -72,4 +76,16 @@ export function formatRuntimeAIError(error: unknown): Record<string, unknown> {
     code: 'ai_extraction_failed',
     message: 'Unknown AI extraction failure.',
   };
+}
+
+function readErrorStringProperty(error: Error, property: string): string | undefined {
+  if (property in error) {
+    const value = (error as Error & Record<string, unknown>)[property];
+
+    if (typeof value === 'string' && value.trim() !== '') {
+      return value;
+    }
+  }
+
+  return undefined;
 }

@@ -59,8 +59,18 @@ async function createDefaultRuntimeTurnService(): Promise<RuntimeTurnService> {
     return defaultRuntimeTurnService;
   }
 
-  const { pool } = await import('../../db/pool.js');
-  defaultRuntimeTurnService = new RuntimeTurnService(new PgRuntimeTurnRepository(pool));
+  const [{ pool }, { env }, { OpenAIRuntimeAIClient }] = await Promise.all([
+    import('../../db/pool.js'),
+    import('../../config/env.js'),
+    import('../../domain/runtime/openAiRuntimeClient.js'),
+  ]);
+  const aiClient = new OpenAIRuntimeAIClient({
+    apiKey: env.OPENAI_API_KEY,
+    model: env.OPENAI_MODEL ?? '',
+    timeoutMs: env.OPENAI_TIMEOUT_MS,
+  });
+
+  defaultRuntimeTurnService = new RuntimeTurnService(new PgRuntimeTurnRepository(pool), aiClient);
 
   return defaultRuntimeTurnService;
 }

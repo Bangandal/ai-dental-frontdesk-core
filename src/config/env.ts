@@ -7,6 +7,9 @@ const envSchema = z.object({
   HOST: z.string().min(1).default('0.0.0.0'),
   PORT: z.coerce.number().int().positive().max(65535).default(3000),
   DATABASE_URL: z.string().url(),
+  OPENAI_API_KEY: z.string().min(1).optional(),
+  OPENAI_MODEL: z.string().min(1).optional(),
+  OPENAI_TIMEOUT_MS: z.coerce.number().int().positive().optional(),
 });
 
 export const env = envSchema.parse(process.env);

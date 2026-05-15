@@ -294,6 +294,14 @@ export class RuntimeTurnService {
       booking_context: bookingContext,
       prompt_version: prompt.prompt_version,
     };
+
+    if (this.aiClient.provider !== undefined) {
+      debug.ai_provider = this.aiClient.provider;
+    }
+
+    if (this.aiClient.model !== undefined) {
+      debug.ai_model = this.aiClient.model;
+    }
     let replyText = RUNTIME_AI_SAFE_FALLBACK_REPLY;
 
     try {
