@@ -12,6 +12,7 @@ import {
   type RuntimeAIClient,
 } from './runtimeAiClient.js';
 import { buildRuntimePrompt } from './runtimePrompt.js';
+import { getClinicLocalDateIso, normalizeRuntimeAIOutputDates } from './runtimeDateNormalizer.js';
 import { decideRuntimeAction } from './runtimePolicy.js';
 import { buildReplyFromBookingResult, type RuntimeReplySource } from './runtimeReplyBuilder.js';
 
@@ -249,10 +250,12 @@ export class RuntimeTurnService {
     private readonly repository: RuntimeTurnRepository,
     private readonly aiClient: RuntimeAIClient = new NoopRuntimeAIClient(),
     private readonly bookingApplyService?: RuntimeBookingApplyService,
+    private readonly clock: () => Date = () => new Date(),
   ) {}
 
   async handleTurn(input: RuntimeTurnInput): Promise<RuntimeTurnResult> {
     const traceId = randomUUID();
+    const turnStartedAt = this.clock();
     const sourceMessageId = stringifyOptional(input.meta?.message_id);
     const sourceUpdateId = stringifyOptional(input.meta?.update_id);
     const dedupeKey = buildInboundDedupeKey(input, sourceMessageId, sourceUpdateId, traceId);
@@ -322,6 +325,7 @@ export class RuntimeTurnService {
       convoState,
       caseContext,
       bookingContext,
+      now: turnStartedAt,
     });
     const debug: Record<string, unknown> = {
       inbound_event_id: inboundEvent.id,
@@ -352,9 +356,19 @@ export class RuntimeTurnService {
         system_prompt: prompt.system_prompt,
         context: prompt.context,
       });
-      const aiOutput = parseRuntimeAIOutput(rawAIOutput);
+      const parsedAIOutput = parseRuntimeAIOutput(rawAIOutput);
+      const currentDateIso = getClinicLocalDateIso(clinic.timezone, turnStartedAt);
+      const normalizationResult = normalizeRuntimeAIOutputDates({
+        ai_output: parsedAIOutput,
+        user_text: input.text,
+        clinic_timezone: clinic.timezone,
+        current_date_iso: currentDateIso,
+      });
+      const aiOutput = normalizationResult.ai_output;
       aiOutputForNotification = aiOutput;
+      debug.ai_output_raw = parsedAIOutput;
       debug.ai_output = aiOutput;
+      debug.date_normalization = normalizationResult.debug;
       const policyDecision = decideRuntimeAction({
         ai_output: aiOutput,
         case_context: caseContext,
@@ -364,7 +378,7 @@ export class RuntimeTurnService {
         channel: input.channel,
         meta: input.meta,
         trace_id: traceId,
-        current_time_iso: new Date().toISOString(),
+        current_time_iso: turnStartedAt.toISOString(),
         user_text: input.text,
       });
       debug.policy_decision = policyDecision;
@@ -411,7 +425,7 @@ export class RuntimeTurnService {
         channel: input.channel,
         meta: input.meta,
         trace_id: traceId,
-        current_time_iso: new Date().toISOString(),
+        current_time_iso: turnStartedAt.toISOString(),
         user_text: input.text,
       });
       debug.policy_decision = policyDecision;

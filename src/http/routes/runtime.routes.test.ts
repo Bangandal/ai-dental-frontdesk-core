@@ -118,7 +118,7 @@ describe('runtime routes', () => {
             },
             booking: {
               preferred_date_iso: 'string|null',
-              preferred_weekday: 'string|null',
+              preferred_weekday: 'monday|tuesday|wednesday|thursday|friday|saturday|sunday|null',
               time_of_day: 'morning|afternoon|evening|any|null',
               patient_confirmed_proposed_slot: 'boolean',
               patient_rejected_proposed_slot: 'boolean',
@@ -440,7 +440,11 @@ describe('runtime routes', () => {
     });
 
     try {
-      const response = await app.inject({ method: 'POST', url: '/runtime/turn', payload: validPayload });
+      const response = await app.inject({
+        method: 'POST',
+        url: '/runtime/turn',
+        payload: { ...validPayload, text: 'Здравствуйте, хочу записаться на консультацию' },
+      });
 
       expect(response.statusCode).toBe(200);
       expect(response.json()).toMatchObject({
@@ -509,6 +513,142 @@ describe('runtime routes', () => {
           policy_decision: { should_call_booking: true, reason: 'availability_request_with_service_and_date' },
         },
       });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('normalizes user_text date before policy and calls BookingApplyService', async () => {
+    const repository = new FakeRuntimeTurnRepository({
+      cases: [makeCase({ id: '55555555-5555-5555-5555-555555555555', collected: { service_interest: 'консультация' } })],
+    });
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'availability_request',
+      requested_action: 'check_availability',
+      reply_draft: 'AI must not be final booking reply.',
+      booking: {
+        preferred_date_iso: null,
+        preferred_weekday: '2023-10-16',
+        time_of_day: null,
+        patient_confirmed_proposed_slot: false,
+        patient_rejected_proposed_slot: false,
+        selected_hold_id: null,
+      },
+    }));
+    const bookingApplyService = new FakeBookingApplyService(awaitingConfirmationResponse());
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, {
+      runtimeTurnService: new RuntimeTurnService(
+        repository,
+        aiClient,
+        bookingApplyService,
+        () => new Date('2026-05-12T10:00:00.000Z'),
+      ),
+    });
+
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/runtime/turn',
+        payload: { ...validPayload, text: 'Хочу записаться на консультацию на 16 число утром' },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(bookingApplyService.calls).toHaveLength(1);
+      expect(bookingApplyService.calls[0]).toMatchObject({
+        bookingAction: 'propose_slot',
+        preferredDateIso: '2026-05-16',
+        preferredWeekday: null,
+        timeOfDay: 'morning',
+      });
+      expect(response.json()).toMatchObject({
+        reply_text: 'Есть окно 16.05.2026, 09:00. Подтверждаем?',
+        booking_result: { booking_status: 'awaiting_patient_confirmation' },
+        debug: {
+          ai_output_raw: {
+            booking: {
+              preferred_date_iso: null,
+              preferred_weekday: '2023-10-16',
+            },
+          },
+          ai_output: {
+            booking: {
+              preferred_date_iso: '2026-05-16',
+              preferred_weekday: null,
+              time_of_day: 'morning',
+            },
+          },
+          date_normalization: {
+            source: 'user_text_day_of_month',
+            after: {
+              preferred_date_iso: '2026-05-16',
+              preferred_weekday: null,
+              time_of_day: 'morning',
+            },
+          },
+          reply_source: 'booking_result',
+        },
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('does not call booking when date cannot be normalized and preferred_weekday is invalid', async () => {
+    const repository = new FakeRuntimeTurnRepository({
+      cases: [makeCase({ collected: { service_interest: 'консультация' } })],
+    });
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'availability_request',
+      requested_action: 'check_availability',
+      reply_draft: 'AI draft should not trigger booking.',
+      booking: {
+        preferred_date_iso: null,
+        preferred_weekday: '2023-10-16',
+        time_of_day: 'morning',
+        patient_confirmed_proposed_slot: false,
+        patient_rejected_proposed_slot: false,
+        selected_hold_id: null,
+      },
+    }));
+    const bookingApplyService = new FakeBookingApplyService(awaitingConfirmationResponse());
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, {
+      runtimeTurnService: new RuntimeTurnService(
+        repository,
+        aiClient,
+        bookingApplyService,
+        () => new Date('2026-05-12T10:00:00.000Z'),
+      ),
+    });
+
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/runtime/turn',
+        payload: { ...validPayload, text: 'Хочу записаться утром' },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        booking_result: null,
+        debug: {
+          reply_source: 'policy',
+          date_normalization: {
+            source: 'none',
+            after: {
+              preferred_date_iso: null,
+              preferred_weekday: null,
+              time_of_day: 'morning',
+            },
+          },
+          policy_decision: {
+            should_call_booking: false,
+            reason: 'booking_interest_missing_datetime',
+          },
+        },
+      });
+      expect(bookingApplyService.calls).toEqual([]);
     } finally {
       await app.close();
     }
@@ -585,7 +725,11 @@ describe('runtime routes', () => {
     });
 
     try {
-      const response = await app.inject({ method: 'POST', url: '/runtime/turn', payload: validPayload });
+      const response = await app.inject({
+        method: 'POST',
+        url: '/runtime/turn',
+        payload: { ...validPayload, text: 'Можно в понедельник утром?' },
+      });
 
       expect(response.statusCode).toBe(200);
       expect(response.json()).toMatchObject({
