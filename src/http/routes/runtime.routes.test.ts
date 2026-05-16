@@ -535,7 +535,11 @@ describe('runtime routes', () => {
         selected_hold_id: null,
       },
     }));
-    const bookingApplyService = new FakeBookingApplyService(awaitingConfirmationResponse());
+    const bookingApplyService = new FakeBookingApplyService(awaitingConfirmationResponse({
+      startAt: '2026-05-12T07:00:00.000Z',
+      endAt: '2026-05-12T07:30:00.000Z',
+      label: '12.05.2026, 09:00',
+    }));
     const app = Fastify();
     await app.register(registerRuntimeRoutes, {
       runtimeTurnService: new RuntimeTurnService(
@@ -562,7 +566,7 @@ describe('runtime routes', () => {
         timeOfDay: 'any',
       });
       expect(response.json()).toMatchObject({
-        reply_text: 'Есть окно 16.05.2026, 09:00. Подтверждаем?',
+        reply_text: 'Есть окно 12.05.2026, 09:00. Подтверждаем?',
         booking_result: { booking_status: 'awaiting_patient_confirmation' },
         debug: {
           ai_output_raw: {
@@ -1892,16 +1896,20 @@ function noBookingResponse(): BookingApplyResponse {
   };
 }
 
-function awaitingConfirmationResponse(): BookingApplyResponse {
+function awaitingConfirmationResponse(overrides: {
+  startAt?: string;
+  endAt?: string;
+  label?: string;
+} = {}): BookingApplyResponse {
   return {
     booking_action: 'propose_slot',
     booking_status: 'awaiting_patient_confirmation',
     hold_id: 'hold-key-1',
     appointment_id: '66666666-6666-6666-6666-666666666666',
     proposed_slot: {
-      start_at: '2026-05-16T07:00:00.000Z',
-      end_at: '2026-05-16T07:30:00.000Z',
-      label: '16.05.2026, 09:00',
+      start_at: overrides.startAt ?? '2026-05-16T07:00:00.000Z',
+      end_at: overrides.endAt ?? '2026-05-16T07:30:00.000Z',
+      label: overrides.label ?? '16.05.2026, 09:00',
       cell_range: 'C4',
       sheet_name: 'Графік',
       service_interest: 'консультация',
