@@ -384,7 +384,6 @@ export class RuntimeTurnService {
         meta: input.meta,
         trace_id: traceId,
         current_time_iso: turnStartedAt.toISOString(),
-        user_text: input.text,
       });
       policyDecisionForReply = policyDecision;
       debug.policy_decision = policyDecision;
@@ -401,7 +400,6 @@ export class RuntimeTurnService {
             policy_decision: policyDecision,
             case_context: caseContext,
             booking_context: bookingContext,
-            user_text: input.text,
           });
           const replyDecision = buildRuntimeReplyBehavior({
             conversation_mode: conversationMode,
@@ -411,7 +409,6 @@ export class RuntimeTurnService {
             booking_context: bookingContext,
             clinic,
             ai_output: aiOutput,
-            user_text: input.text,
             channel: input.channel,
           });
           replyText = replyDecision.reply_text;
@@ -438,7 +435,6 @@ export class RuntimeTurnService {
           policy_decision: policyDecision,
           case_context: caseContext,
           booking_context: bookingContext,
-          user_text: input.text,
         });
         const replyDecision = buildRuntimeReplyBehavior({
           conversation_mode: conversationMode,
@@ -448,7 +444,6 @@ export class RuntimeTurnService {
           booking_context: bookingContext,
           clinic,
           ai_output: aiOutput,
-          user_text: input.text,
           channel: input.channel,
         });
         replyText = replyDecision.reply_text;
@@ -469,7 +464,6 @@ export class RuntimeTurnService {
         meta: input.meta,
         trace_id: traceId,
         current_time_iso: turnStartedAt.toISOString(),
-        user_text: input.text,
       });
       policyDecisionForReply = policyDecision;
       debug.policy_decision = policyDecision;
@@ -479,7 +473,6 @@ export class RuntimeTurnService {
         policy_decision: policyDecision,
         case_context: caseContext,
         booking_context: bookingContext,
-        user_text: input.text,
       });
       const replyDecision = buildRuntimeReplyBehavior({
         conversation_mode: conversationMode,
@@ -489,7 +482,6 @@ export class RuntimeTurnService {
         booking_context: bookingContext,
         clinic,
         ai_output: null,
-        user_text: input.text,
         channel: input.channel,
       });
       replyText = replyDecision.reply_text;

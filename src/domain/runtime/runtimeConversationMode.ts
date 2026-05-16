@@ -1,5 +1,5 @@
 import type { BookingApplyResponse } from '../booking/bookingApply.js';
-import type { RuntimeAIOutput, RuntimeTurnInput } from './runtimeContracts.js';
+import type { RuntimeAIOutput } from './runtimeContracts.js';
 import type { RuntimePolicyDecision } from './runtimePolicy.js';
 import type { RuntimeBookingContext, RuntimeCaseContext } from './runtimeTurnService.js';
 
@@ -26,7 +26,6 @@ export interface RuntimeConversationModeInput {
   policy_decision: RuntimePolicyDecision | null;
   case_context: RuntimeCaseContext;
   booking_context: RuntimeBookingContext;
-  user_text: RuntimeTurnInput['text'];
 }
 
 export function classifyRuntimeConversationMode(input: RuntimeConversationModeInput): RuntimeConversationMode {
@@ -48,27 +47,31 @@ export function classifyRuntimeConversationMode(input: RuntimeConversationModeIn
 
   const aiOutput = input.ai_output;
 
-  if (detectMultiPatientRequest(input.user_text) || aiOutput?.conversation_intent === 'multi_patient_request') {
+  if (aiOutput === null) {
+    return 'safe_fallback';
+  }
+
+  if (aiOutput.patient_scope === 'another_person' || aiOutput.patient_scope === 'multiple_people') {
     return 'multi_patient_request';
   }
 
-  if (aiOutput?.conversation_intent === 'reschedule' || aiOutput?.conversation_intent === 'cancel_appointment') {
+  if (aiOutput.conversation_intent === 'reschedule' || aiOutput.conversation_intent === 'cancel_appointment') {
     return 'reschedule_request';
   }
 
-  if (aiOutput?.handoff_recommended === true || aiOutput?.requested_action === 'handoff' || aiOutput?.conversation_intent === 'urgent') {
+  if (aiOutput.handoff_recommended === true || aiOutput.requested_action === 'handoff' || aiOutput.conversation_intent === 'urgent') {
     return 'human_handoff';
   }
 
-  if (detectAddressQuestion(input.user_text)) {
+  if (aiOutput.faq_topic === 'address') {
     return 'faq_address';
   }
 
-  if (detectPriceQuestion(input.user_text)) {
+  if (aiOutput.faq_topic === 'price') {
     return 'faq_price';
   }
 
-  if (detectInsuranceQuestion(input.user_text)) {
+  if (aiOutput.faq_topic === 'insurance') {
     return 'faq_insurance';
   }
 
@@ -76,102 +79,25 @@ export function classifyRuntimeConversationMode(input: RuntimeConversationModeIn
     return 'post_booking_question';
   }
 
-  if (aiOutput?.conversation_intent === 'availability_request' || input.policy_decision?.next_action === 'propose_slot') {
+  if (aiOutput.conversation_intent === 'availability_request' || input.policy_decision?.next_action === 'propose_slot') {
     return 'availability_request';
   }
 
-  if (aiOutput?.conversation_intent === 'booking' || input.policy_decision?.reason === 'booking_interest_missing_datetime') {
+  if (aiOutput.conversation_intent === 'booking' || input.policy_decision?.reason === 'booking_interest_missing_datetime') {
     return 'booking_interest';
   }
 
   return 'safe_fallback';
 }
 
-export function detectMultiPatientRequest(userText: string): boolean {
-  const normalized = normalizeText(userText);
-  const directPhrases = [
-    'можно с парнем',
-    'можна з хлопцем',
-    'хочу записать мужа',
-    'хочу записати чоловіка',
-    'записать мужа',
-    'записати чоловіка',
-    'записать брата',
-    'записати брата',
-    'записать сестру',
-    'записати сестру',
-    'записать маму',
-    'записати маму',
-    'записать папу',
-    'записати тата',
-  ];
-
-  if (directPhrases.some((phrase) => normalized.includes(phrase))) {
-    return true;
-  }
-
-  const hasBookingVerb = normalized.includes('записать') || normalized.includes('записати');
-  const hasOtherPatient = ['мужа', 'чоловіка', 'брата', 'сестру', 'маму', 'папу', 'тата', 'парнем', 'хлопцем']
-    .some((word) => normalized.includes(word));
-
-  return hasBookingVerb && hasOtherPatient;
-}
-
-function detectAddressQuestion(userText: string): boolean {
-  const normalized = normalizeText(userText);
-
-  return [
-    'адрес',
-    'адреса',
-    'локация',
-    'локація',
-    'геолокация',
-    'геолокація',
-    'как добраться',
-    'як дістатися',
-    'где вы',
-    'де ви',
-    'карте',
-    'мапі',
-  ].some((phrase) => normalized.includes(phrase));
-}
-
-function detectPriceQuestion(userText: string): boolean {
-  const normalized = normalizeText(userText);
-
-  return [
-    'сколько стоит',
-    'скільки коштує',
-    'цена',
-    'ціна',
-    'прайс',
-    'стоимость',
-    'вартість',
-  ].some((phrase) => normalized.includes(phrase));
-}
-
-function detectInsuranceQuestion(userText: string): boolean {
-  const normalized = normalizeText(userText);
-
-  return ['страхов', 'страхів', 'insurance', 'pojist', 'pojišť'].some((phrase) => normalized.includes(phrase));
-}
-
 function hasBookingContinuity(bookingContext: RuntimeBookingContext): boolean {
   return bookingContext.active_hold !== null || bookingContext.latest_appointment !== null;
 }
 
-function isNonBookingQuestion(aiOutput: RuntimeAIOutput | null): boolean {
-  if (aiOutput === null) {
-    return false;
-  }
-
+function isNonBookingQuestion(aiOutput: RuntimeAIOutput): boolean {
   return aiOutput.conversation_intent === 'faq'
     || aiOutput.conversation_intent === 'follow_up'
     || aiOutput.requested_action === 'answer_faq'
     || aiOutput.requested_action === 'continue'
     || aiOutput.requested_action === 'clarify';
-}
-
-function normalizeText(value: string): string {
-  return value.toLocaleLowerCase('uk-UA').replaceAll('ё', 'е').trim();
 }

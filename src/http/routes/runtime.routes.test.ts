@@ -124,6 +124,8 @@ describe('runtime routes', () => {
               patient_rejected_proposed_slot: 'boolean',
               selected_hold_id: 'string|null',
             },
+            faq_topic: 'price|insurance|address|other|unknown',
+            patient_scope: 'self|another_person|multiple_people|unknown',
             handoff_recommended: 'boolean',
             kb_used: 'boolean',
             confidence: 'high|medium|low',
@@ -1015,6 +1017,7 @@ describe('runtime routes', () => {
     const aiClient = new FakeRuntimeAIClient(validAIOutput({
       conversation_intent: 'faq',
       requested_action: 'answer_faq',
+      faq_topic: 'price',
       reply_draft: 'Консультація коштує 500 Kč.',
     }));
     const app = Fastify();
@@ -1052,6 +1055,7 @@ describe('runtime routes', () => {
     const aiClient = new FakeRuntimeAIClient(validAIOutput({
       conversation_intent: 'faq',
       requested_action: 'answer_faq',
+      faq_topic: 'address',
       reply_draft: null,
     }));
     const app = Fastify();
@@ -1089,6 +1093,7 @@ describe('runtime routes', () => {
     const aiClient = new FakeRuntimeAIClient(validAIOutput({
       conversation_intent: 'faq',
       requested_action: 'answer_faq',
+      faq_topic: 'price',
       reply_draft: 'Консультація коштує 500 Kč.',
     }));
     const bookingApplyService = new FakeBookingApplyService(noBookingResponse());
@@ -1129,6 +1134,7 @@ describe('runtime routes', () => {
     const aiClient = new FakeRuntimeAIClient(validAIOutput({
       conversation_intent: 'faq',
       requested_action: 'answer_faq',
+      faq_topic: 'address',
     }));
     const app = Fastify();
     await app.register(registerRuntimeRoutes, { runtimeTurnService: new RuntimeTurnService(repository, aiClient) });
@@ -1225,6 +1231,7 @@ describe('runtime routes', () => {
     const aiClient = new FakeRuntimeAIClient(validAIOutput({
       conversation_intent: 'booking',
       requested_action: 'ask_slot',
+      patient_scope: 'another_person',
       reply_draft: 'AI draft should not schedule another patient.',
     }));
     const bookingApplyService = new FakeBookingApplyService(noBookingResponse());
@@ -2348,6 +2355,8 @@ function validAIOutput(overrides: Partial<RuntimeAIOutput> = {}): RuntimeAIOutpu
       patient_rejected_proposed_slot: false,
       selected_hold_id: null,
     },
+    faq_topic: 'unknown',
+    patient_scope: 'unknown',
     handoff_recommended: false,
     kb_used: false,
     confidence: 'medium',

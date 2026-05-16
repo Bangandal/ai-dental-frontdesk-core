@@ -14,7 +14,6 @@ export interface RuntimeReplyBehaviorInput {
   booking_context: RuntimeBookingContext;
   clinic: RuntimeClinicRecord;
   ai_output: RuntimeAIOutput | null;
-  user_text: RuntimeTurnInput['text'];
   channel: RuntimeTurnInput['channel'];
 }
 
@@ -36,7 +35,7 @@ export function buildRuntimeReplyBehavior(input: RuntimeReplyBehaviorInput): Run
 
     if (locationPacket !== null) {
       return {
-        reply_text: buildAddressReply(locationPacket, aiDraft),
+        reply_text: buildAddressReply(locationPacket),
         reply_source: 'policy',
         side_effects: [locationPacket],
       };
@@ -154,11 +153,7 @@ function buildLocationPacket(settings: Record<string, unknown>, channel: Runtime
   };
 }
 
-function buildAddressReply(locationPacket: LocationPacketSideEffect, aiDraft: string | undefined): string {
-  if (aiDraft !== undefined && aiDraft.includes(locationPacket.address)) {
-    return aiDraft;
-  }
-
+function buildAddressReply(locationPacket: LocationPacketSideEffect): string {
   const mapsPart = locationPacket.maps_url === null ? '' : `\nМапа: ${locationPacket.maps_url}`;
 
   return `Адреса клініки: ${locationPacket.address}.${mapsPart}`;

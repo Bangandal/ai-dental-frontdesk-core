@@ -39,6 +39,8 @@ export class NoopRuntimeAIClient implements RuntimeAIClient {
         patient_rejected_proposed_slot: false,
         selected_hold_id: null,
       },
+      faq_topic: 'unknown',
+      patient_scope: 'unknown',
       handoff_recommended: false,
       kb_used: false,
       confidence: 'low',

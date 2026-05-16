@@ -12,7 +12,6 @@ export interface RuntimePolicyInput {
   meta?: RuntimeTurnInput['meta'];
   trace_id: string;
   current_time_iso?: string;
-  user_text?: string;
 }
 
 export interface RuntimePolicyDecision {

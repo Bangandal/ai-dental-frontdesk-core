@@ -52,6 +52,8 @@
     "patient_rejected_proposed_slot": false,
     "selected_hold_id": null
   },
+  "faq_topic": "price|insurance|address|other|unknown",
+  "patient_scope": "self|another_person|multiple_people|unknown",
   "handoff_recommended": false,
   "kb_used": false,
   "confidence": "high|medium|low"
