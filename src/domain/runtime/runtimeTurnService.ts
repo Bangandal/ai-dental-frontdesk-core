@@ -571,6 +571,10 @@ export class RuntimeTurnService {
 
   private async searchKnowledgeForTurn(input: SearchKnowledgeForTurnInput): Promise<RuntimeKnowledgeResult | null> {
     if (!shouldSearchKnowledge(input.aiOutput, input.conversationMode)) {
+      if (isFaqAnswer(input.aiOutput)) {
+        input.debug.kb_used = false;
+      }
+
       return null;
     }
 
@@ -691,6 +695,10 @@ interface AdminNotificationTrigger {
   reason: string;
 }
 
+
+function isFaqAnswer(aiOutput: RuntimeAIOutput): boolean {
+  return aiOutput.conversation_intent === 'faq' || aiOutput.requested_action === 'answer_faq';
+}
 
 function shouldSearchKnowledge(aiOutput: RuntimeAIOutput, conversationMode: RuntimeConversationMode): boolean {
   if (conversationMode === 'faq_price' || conversationMode === 'faq_insurance' || conversationMode === 'faq_address') {

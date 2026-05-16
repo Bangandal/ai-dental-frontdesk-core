@@ -13,6 +13,7 @@ import { AppointmentLifecycleService } from '../../domain/appointments/appointme
 import { PgAppointmentRepository } from '../../domain/appointments/appointmentRepository.js';
 import { BookingApplyService } from '../../domain/booking/bookingApply.js';
 import { runtimeTurnInputSchema } from '../../domain/runtime/runtimeContracts.js';
+import { NoopRuntimeKnowledgeRepository, PgRuntimeKnowledgeRepository } from '../../domain/runtime/runtimeKnowledgeRepository.js';
 
 export interface RuntimeRoutesOptions {
   runtimeTurnService?: RuntimeTurnService;
@@ -88,10 +89,16 @@ async function createDefaultRuntimeTurnService(): Promise<RuntimeTurnService> {
   const appointmentLifecycle = new AppointmentLifecycleService({ repository: appointmentRepository });
   const bookingApplyService = new BookingApplyService(appointmentLifecycle, appointmentRepository);
 
+  const knowledgeRepository = env.RUNTIME_KB_RPC_NAME === undefined
+    ? new NoopRuntimeKnowledgeRepository()
+    : new PgRuntimeKnowledgeRepository(pool, { rpcName: env.RUNTIME_KB_RPC_NAME });
+
   defaultRuntimeTurnService = new RuntimeTurnService(
     new PgRuntimeTurnRepository(pool),
     aiClient,
     bookingApplyService,
+    undefined,
+    knowledgeRepository,
   );
 
   return defaultRuntimeTurnService;

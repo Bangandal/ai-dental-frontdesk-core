@@ -31,6 +31,7 @@ const envSchema = z.object({
   OPENAI_API_KEY: z.string().min(1).optional(),
   OPENAI_MODEL: z.string().min(1).optional(),
   OPENAI_TIMEOUT_MS: z.coerce.number().int().positive().optional(),
+  RUNTIME_KB_RPC_NAME: z.string().min(1).optional(),
 });
 
 export const env = envSchema.parse(process.env);

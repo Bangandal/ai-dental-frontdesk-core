@@ -116,3 +116,14 @@ Output:
 ```
 
 Runtime must answer price, insurance, address, and other FAQ facts only from returned snippets. If retrieval returns no snippets or fails, runtime uses a safe fallback and does not use general AI knowledge or hardcoded clinic facts.
+
+
+### Optional Postgres RPC adapter
+
+The default runtime factory uses `NoopRuntimeKnowledgeRepository` unless `RUNTIME_KB_RPC_NAME` is configured. When configured, `PgRuntimeKnowledgeRepository` calls exactly one Postgres function with a single `jsonb` argument using parameterized SQL:
+
+```sql
+select "schema"."function_name"($1::jsonb) as result
+```
+
+`RUNTIME_KB_RPC_NAME` must be either `function_name` or `schema.function_name` using only ASCII letters, digits, and underscores. The RPC must return a JSON/JSONB object matching `RuntimeKnowledgeResult` (`found`, `snippets`, optional `debug`). A recommended production name is `kb.kb_retrieve_json` if that RPC exists in the deployed database. This repo still does not add KB tables or migrations; production DB/RAG remains the source of truth.

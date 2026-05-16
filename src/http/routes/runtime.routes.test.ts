@@ -21,7 +21,7 @@ import {
 } from '../../domain/runtime/runtimeAiClient.js';
 import { RuntimeAIProviderError } from '../../domain/runtime/openAiRuntimeClient.js';
 import type { RuntimeAIOutput } from '../../domain/runtime/runtimeContracts.js';
-import type { RuntimeKnowledgeRepository, RuntimeKnowledgeResult, RuntimeKnowledgeSearchInput } from '../../domain/runtime/runtimeKnowledgeRepository.js';
+import { PgRuntimeKnowledgeRepository, type RuntimeKnowledgeRepository, type RuntimeKnowledgeResult, type RuntimeKnowledgeSearchInput } from '../../domain/runtime/runtimeKnowledgeRepository.js';
 import { RuntimeTurnService } from '../../domain/runtime/runtimeTurnService.js';
 import { createRuntimeAIClient, registerRuntimeRoutes } from './runtime.routes.js';
 
@@ -74,6 +74,41 @@ describe('runtime AI client factory', () => {
       provider: 'openai',
       model: 'gpt-test-runtime',
     });
+  });
+});
+
+
+describe('runtime knowledge repository', () => {
+  it('calls configured KB RPC with one jsonb argument and normalizes snippets', async () => {
+    const db = new FakeQueryable([{ result: {
+      found: true,
+      snippets: [{ title: 'Price', content: 'Consultation price is in KB.', source_type: 'faq', score: 0.8, metadata: { row_id: 'kb-1' } }],
+      debug: { rpc: 'kb_retrieve_json' },
+    } }]);
+    const repository = new PgRuntimeKnowledgeRepository(db, { rpcName: 'kb.kb_retrieve_json' });
+
+    const result = await repository.searchClinicKnowledge({
+      clinic_id: '11111111-1111-1111-1111-111111111111',
+      faq_topic: 'price',
+      service_interest: 'консультація',
+      user_text: 'скільки коштує консультація?',
+      language: 'uk',
+      channel: 'telegram',
+      trace_id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+      limit: 4,
+    });
+
+    expect(db.calls).toEqual([{ sql: 'select "kb"."kb_retrieve_json"($1::jsonb) as result', values: [expect.any(String)] }]);
+    expect(JSON.parse(db.calls[0].values[0] as string)).toMatchObject({ faq_topic: 'price', service_interest: 'консультація' });
+    expect(result).toEqual({
+      found: true,
+      snippets: [{ title: 'Price', content: 'Consultation price is in KB.', source_type: 'faq', score: 0.8, metadata: { row_id: 'kb-1' } }],
+      debug: { rpc: 'kb_retrieve_json' },
+    });
+  });
+
+  it('rejects unsafe configured KB RPC names before building SQL', () => {
+    expect(() => new PgRuntimeKnowledgeRepository(new FakeQueryable([]), { rpcName: 'kb.kb_retrieve_json;drop' })).toThrow('unsafe SQL identifier');
   });
 });
 
@@ -221,7 +256,7 @@ describe('runtime routes', () => {
     }
   });
 
-  it('does not call booking for FAQ AI output and uses AI draft', async () => {
+  it('does not return ungrounded AI draft for factual FAQ without KB', async () => {
     const repository = new FakeRuntimeTurnRepository();
     const aiClient = new FakeRuntimeAIClient(validAIOutput({
       conversation_intent: 'faq',
@@ -239,17 +274,19 @@ describe('runtime routes', () => {
 
       expect(response.statusCode).toBe(200);
       expect(response.json()).toMatchObject({
-        reply_text: 'Консультация стоит 500 Kč.',
+        reply_text: 'Уточню це в адміністратора, щоб відповісти точно.',
         booking_result: null,
         side_effects: [],
         debug: {
-          reply_source: 'ai_draft',
+          reply_source: 'safe_fallback',
+          kb_used: false,
           policy_decision: {
             should_call_booking: false,
             reason: 'no_booking_for_faq',
           },
         },
       });
+      expect(response.json().reply_text).not.toContain('500 Kč');
       expect(bookingApplyService.calls).toEqual([]);
     } finally {
       await app.close();
@@ -257,7 +294,7 @@ describe('runtime routes', () => {
   });
 
 
-  it('saves outbound assistant message on successful AI draft reply with runtime meta', async () => {
+  it('saves outbound assistant message on ungrounded FAQ safe fallback with runtime meta', async () => {
     const repository = new FakeRuntimeTurnRepository();
     const aiClient = new FakeRuntimeAIClient(validAIOutput({
       conversation_intent: 'faq',
@@ -274,10 +311,11 @@ describe('runtime routes', () => {
 
       expect(response.statusCode).toBe(200);
       expect(response.json()).toMatchObject({
-        reply_text: 'Консультация стоит 500 Kč.',
+        reply_text: 'Уточню це в адміністратора, щоб відповісти точно.',
         side_effects: [],
         debug: {
-          reply_source: 'ai_draft',
+          reply_source: 'safe_fallback',
+          kb_used: false,
           outbound_message_id: '77777777-7777-7777-7777-777777777777',
         },
       });
@@ -287,11 +325,11 @@ describe('runtime routes', () => {
         contactId: '22222222-2222-2222-2222-222222222222',
         caseId: null,
         channel: 'telegram',
-        text: 'Консультация стоит 500 Kč.',
+        text: 'Уточню це в адміністратора, щоб відповісти точно.',
         replyToMessageId: '44444444-4444-4444-4444-444444444444',
         meta: {
           source: 'runtime_turn',
-          reply_source: 'ai_draft',
+          reply_source: 'safe_fallback',
           prompt_version: 'runtime-ai-extraction-v1',
           policy_decision: {
             reason: 'no_booking_for_faq',
@@ -412,16 +450,18 @@ describe('runtime routes', () => {
 
       expect(response.statusCode).toBe(200);
       expect(response.json()).toMatchObject({
-        reply_text: 'Консультация стоит 500 Kč.',
+        reply_text: 'Уточню це в адміністратора, щоб відповісти точно.',
         side_effects: [],
         debug: {
-          reply_source: 'ai_draft',
+          reply_source: 'safe_fallback',
+          kb_used: false,
           outbound_persistence_error: {
             code: 'outbound_persistence_failed',
             message: 'Outbound assistant message persistence failed.',
           },
         },
       });
+      expect(response.json().reply_text).not.toContain('500 Kč');
       expect(response.json().debug.outbound_message_id).toBeUndefined();
       expect(repository.operationOrder).toEqual(['saveInboundUserMessage', 'saveOutboundAssistantMessage']);
     } finally {
@@ -1253,11 +1293,12 @@ describe('runtime routes', () => {
 
       expect(response.statusCode).toBe(200);
       expect(response.json()).toMatchObject({
-        reply_text: 'Так, чистку також робимо. Можемо зорієнтувати по доступних годинах окремо.',
+        reply_text: 'Ваш запис бачу в контексті. Уточню це в адміністратора, щоб відповісти точно.',
         booking_result: null,
         side_effects: [],
-        debug: { conversation_mode: 'post_booking_question' },
+        debug: { conversation_mode: 'post_booking_question', reply_source: 'safe_fallback', kb_used: false },
       });
+      expect(response.json().reply_text).not.toContain('чистку також робимо');
       expect(bookingApplyService.calls).toEqual([]);
     } finally {
       await app.close();
@@ -1285,13 +1326,16 @@ describe('runtime routes', () => {
 
       expect(response.statusCode).toBe(200);
       expect(response.json()).toMatchObject({
-        reply_text: 'Так, консультація перед лікуванням доступна.',
+        reply_text: 'Ваш запис бачу в контексті. Уточню це в адміністратора, щоб відповісти точно.',
         booking_result: null,
         debug: {
           conversation_mode: 'post_booking_question',
+          reply_source: 'safe_fallback',
+          kb_used: false,
           booking_context: { active_hold: { hold_id: 'hold-key-1' } },
         },
       });
+      expect(response.json().reply_text).not.toContain('консультація перед лікуванням доступна');
       expect(bookingApplyService.calls).toEqual([]);
     } finally {
       await app.close();
@@ -1424,8 +1468,11 @@ describe('runtime routes', () => {
       const response = await app.inject({ method: 'POST', url: '/runtime/turn', payload: { ...validPayload, text: 'скільки коштує консультація?' } });
 
       expect(response.statusCode).toBe(200);
-      expect(response.json()).toMatchObject({ debug: { conversation_mode: 'safe_fallback' } });
-      expect(response.json().reply_text).toBe('Консультація коштує 999 Kč.');
+      expect(response.json()).toMatchObject({
+        reply_text: 'Уточню це в адміністратора, щоб відповісти точно.',
+        debug: { conversation_mode: 'safe_fallback', reply_source: 'safe_fallback', kb_used: false },
+      });
+      expect(response.json().reply_text).not.toContain('999 Kč');
       expect(knowledgeRepository.calls).toEqual([]);
     } finally {
       await app.close();
@@ -2369,6 +2416,18 @@ function makeAppointment(overrides: Partial<RuntimeExternalAppointmentRecord> = 
   };
 }
 
+
+
+class FakeQueryable {
+  constructor(private readonly rows: Array<Record<string, unknown>>) {}
+
+  readonly calls: Array<{ sql: string; values: unknown[] }> = [];
+
+  async query(sql: string, values: unknown[] = []): Promise<{ rows: Array<Record<string, unknown>> }> {
+    this.calls.push({ sql, values });
+    return { rows: this.rows };
+  }
+}
 
 class FakeRuntimeKnowledgeRepository implements RuntimeKnowledgeRepository {
   constructor(private readonly result: RuntimeKnowledgeResult) {}

@@ -109,18 +109,16 @@ export function buildRuntimeReplyBehavior(input: RuntimeReplyBehaviorInput): Run
   }
 
   if (input.conversation_mode === 'post_booking_question') {
-    const aiDraft = readNonEmpty(input.ai_output?.reply_draft);
-
-    if (aiDraft !== undefined && (input.ai_output?.faq_topic === 'unknown' || input.ai_output?.faq_topic === 'other')) {
-      return {
-        reply_text: aiDraft,
-        reply_source: 'ai_draft',
-        side_effects: [],
-      };
-    }
-
     return {
-      reply_text: 'Ваш запис бачу в контексті. Напишіть, будь ласка, яке саме питання — допоможу або передам адміністратору.',
+      reply_text: 'Ваш запис бачу в контексті. Уточню це в адміністратора, щоб відповісти точно.',
+      reply_source: 'safe_fallback',
+      side_effects: [],
+    };
+  }
+
+  if (isUngroundedClinicFaq(input)) {
+    return {
+      reply_text: buildUngroundedClinicFaqFallback(input.ai_output?.faq_topic ?? 'unknown'),
       reply_source: 'safe_fallback',
       side_effects: [],
     };
@@ -143,6 +141,39 @@ export function buildRuntimeReplyBehavior(input: RuntimeReplyBehaviorInput): Run
   };
 }
 
+
+
+function isUngroundedClinicFaq(input: RuntimeReplyBehaviorInput): boolean {
+  const aiOutput = input.ai_output;
+
+  if (aiOutput === null) {
+    return false;
+  }
+
+  const isFaq = aiOutput.conversation_intent === 'faq' || aiOutput.requested_action === 'answer_faq';
+
+  if (!isFaq) {
+    return false;
+  }
+
+  return input.knowledge_result?.found !== true || aiOutput.faq_topic === 'unknown';
+}
+
+function buildUngroundedClinicFaqFallback(faqTopic: RuntimeAIOutput['faq_topic']): string {
+  if (faqTopic === 'price') {
+    return 'Уточню актуальну вартість в адміністратора, щоб не назвати неточну суму.';
+  }
+
+  if (faqTopic === 'insurance') {
+    return 'Уточню це в адміністратора, щоб точно перевірити умови страхового покриття.';
+  }
+
+  if (faqTopic === 'address') {
+    return 'Уточню це в адміністратора й повернуся з точною адресою або орієнтирами.';
+  }
+
+  return 'Уточню це в адміністратора, щоб відповісти точно.';
+}
 
 function isKnowledgeAnswerMode(input: RuntimeReplyBehaviorInput): boolean {
   return input.conversation_mode === 'faq_price'
