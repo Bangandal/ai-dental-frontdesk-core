@@ -1,6 +1,6 @@
 import type { RuntimeAIOutput } from './runtimeContracts.js';
 
-export type RuntimeDateNormalizationSource = 'ai' | 'user_text_day_of_month' | 'user_text_relative_day' | 'none';
+export type RuntimeDateNormalizationSource = 'ai' | 'user_text_explicit_date' | 'user_text_day_of_month' | 'user_text_relative_day' | 'none';
 
 export interface RuntimeDateNormalizationDebug {
   before: {
@@ -72,22 +72,29 @@ export function normalizeRuntimeAIOutputDates(input: NormalizeRuntimeAIOutputDat
     }
 
     normalized.booking.preferred_date_iso = null;
-    const relativeDate = extractRelativeDate(input.user_text, input.current_date_iso);
+    const explicitDate = extractExplicitDate(input.user_text, input.current_date_iso);
 
-    if (relativeDate !== null) {
-      normalized.booking.preferred_date_iso = relativeDate;
-      source = 'user_text_relative_day';
+    if (explicitDate !== null) {
+      normalized.booking.preferred_date_iso = explicitDate;
+      source = 'user_text_explicit_date';
     } else {
-      const dayOfMonth = extractDayOfMonth(input.user_text);
+      const relativeDate = extractRelativeDate(input.user_text, input.current_date_iso);
 
-      if (dayOfMonth !== null) {
-        const resolvedDate = resolveDayOfMonth(input.current_date_iso, dayOfMonth);
+      if (relativeDate !== null) {
+        normalized.booking.preferred_date_iso = relativeDate;
+        source = 'user_text_relative_day';
+      } else {
+        const dayOfMonth = extractDayOfMonth(input.user_text);
 
-        if (resolvedDate !== null) {
-          normalized.booking.preferred_date_iso = resolvedDate;
-          source = 'user_text_day_of_month';
-        } else {
-          warnings.push(`day_of_month_out_of_range:${dayOfMonth}`);
+        if (dayOfMonth !== null) {
+          const resolvedDate = resolveDayOfMonth(input.current_date_iso, dayOfMonth);
+
+          if (resolvedDate !== null) {
+            normalized.booking.preferred_date_iso = resolvedDate;
+            source = 'user_text_day_of_month';
+          } else {
+            warnings.push(`day_of_month_out_of_range:${dayOfMonth}`);
+          }
         }
       }
     }
@@ -146,6 +153,99 @@ function readPart(parts: Intl.DateTimeFormatPart[], type: Intl.DateTimeFormatPar
   return parts.find((part) => part.type === type)?.value ?? '00';
 }
 
+function extractExplicitDate(userText: string, currentDateIso: string): string | null {
+  const isoDate = extractIsoDate(userText);
+
+  if (isoDate !== null) {
+    return isoDate;
+  }
+
+  const explicitDayMonthYear = extractExplicitDayMonthYear(userText);
+
+  if (explicitDayMonthYear !== null) {
+    return explicitDayMonthYear;
+  }
+
+  return extractExplicitDayMonth(userText, currentDateIso);
+}
+
+function extractIsoDate(userText: string): string | null {
+  const pattern = /(?:^|[^\d])(\d{4})-(\d{2})-(\d{2})(?!\d)/u;
+  const match = pattern.exec(userText);
+
+  if (match === null) {
+    return null;
+  }
+
+  const candidate = `${match[1] ?? ''}-${match[2] ?? ''}-${match[3] ?? ''}`;
+
+  return isValidDateIso(candidate) ? candidate : null;
+}
+
+function extractExplicitDayMonthYear(userText: string): string | null {
+  const pattern = /(?:^|[^\d])(\d{1,2})\.(\d{1,2})\.(\d{4})(?!\d)/u;
+  const match = pattern.exec(userText);
+
+  if (match === null) {
+    return null;
+  }
+
+  const day = Number.parseInt(match[1] ?? '', 10);
+  const month = Number.parseInt(match[2] ?? '', 10);
+  const year = Number.parseInt(match[3] ?? '', 10);
+  const candidate = formatDateIso(year, month, day);
+
+  return isValidDateIso(candidate) ? candidate : null;
+}
+
+function extractExplicitDayMonth(userText: string, currentDateIso: string): string | null {
+  const pattern = /(?:^|[^\d])(\d{1,2})\.(\d{1,2})(?![.\d])/gu;
+  const matches = userText.matchAll(pattern);
+  const current = parseDateIsoParts(currentDateIso);
+
+  if (current === null) {
+    return null;
+  }
+
+  for (const match of matches) {
+    const day = Number.parseInt(match[1] ?? '', 10);
+    const month = Number.parseInt(match[2] ?? '', 10);
+    const resolved = resolveDayMonth(current, day, month);
+
+    if (resolved !== null) {
+      return resolved;
+    }
+  }
+
+  return null;
+}
+
+function resolveDayMonth(current: { year: number; month: number; day: number }, day: number, month: number): string | null {
+  if (!Number.isInteger(day) || !Number.isInteger(month) || month < 1 || month > 12 || day < 1) {
+    return null;
+  }
+
+  let year = current.year;
+
+  if (day > daysInMonth(year, month)) {
+    return null;
+  }
+
+  let candidate = formatDateIso(year, month, day);
+
+  if (candidate < formatDateIso(current.year, current.month, current.day)) {
+    year += 1;
+
+    if (day > daysInMonth(year, month)) {
+      return null;
+    }
+
+    candidate = formatDateIso(year, month, day);
+  }
+
+  return candidate;
+}
+
 function extractRelativeDate(userText: string, currentDateIso: string): string | null {
   const lowerText = userText.toLowerCase();
 
@@ -163,8 +263,8 @@ function extractRelativeDate(userText: string, currentDateIso: string): string |
 function extractDayOfMonth(userText: string): number | null {
   const lowerText = userText.toLowerCase();
   const patterns = [
-    /(?:^|\s)на\s+(\d{1,2})(?:\s*(?:число|числа)\b|(?![:.]\d)\b)/u,
-    /(?:^|\s)(\d{1,2})\s*(?:число|числа)\b/u,
+    /(?:^|\s)на\s+(\d{1,2})\s*(?:число|числа)(?=\s|$|[?!.,;:])/u,
+    /(?:^|\s)(\d{1,2})\s*(?:число|числа)(?=\s|$|[?!.,;:])/u,
     /(?:^|\s)(\d{1,2})-?го\b/u,
   ];
 

@@ -19,6 +19,68 @@ describe('normalizeRuntimeAIOutputDates', () => {
     expect(result.debug.source).toBe('user_text_day_of_month');
   });
 
+  it('does not normalize ambiguous bare numeric date phrases', () => {
+    const result = normalizeRuntimeAIOutputDates({
+      ai_output: validAIOutput(),
+      user_text: 'Можно на 18?',
+      clinic_timezone: clinicTimezone,
+      current_date_iso: '2026-05-12',
+    });
+
+    expect(result.ai_output.booking.preferred_date_iso).toBeNull();
+    expect(result.debug.source).toBe('none');
+  });
+
+  it('normalizes explicit day-of-month phrases with число', () => {
+    const result = normalizeRuntimeAIOutputDates({
+      ai_output: validAIOutput(),
+      user_text: 'Можно на 18 число?',
+      clinic_timezone: clinicTimezone,
+      current_date_iso: '2026-05-12',
+    });
+
+    expect(result.ai_output.booking.preferred_date_iso).toBe('2026-05-18');
+    expect(result.debug.source).toBe('user_text_day_of_month');
+  });
+
+  it('normalizes chat-style DD.MM dates without treating clock time as a date', () => {
+    const result = normalizeRuntimeAIOutputDates({
+      ai_output: validAIOutput(),
+      user_text: '12.05 на 14.00 записываем?',
+      clinic_timezone: clinicTimezone,
+      current_date_iso: '2026-05-01',
+    });
+
+    expect(result.ai_output.booking.preferred_date_iso).toBe('2026-05-12');
+    expect(result.ai_output.slot_updates.preferred_time).toBeNull();
+    expect(result.ai_output.booking.time_of_day).toBeNull();
+    expect(result.debug.source).toBe('user_text_explicit_date');
+  });
+
+  it('normalizes chat-style DD.MM.YYYY dates', () => {
+    const result = normalizeRuntimeAIOutputDates({
+      ai_output: validAIOutput(),
+      user_text: '12.05.2026 на 14.00',
+      clinic_timezone: clinicTimezone,
+      current_date_iso: '2026-05-01',
+    });
+
+    expect(result.ai_output.booking.preferred_date_iso).toBe('2026-05-12');
+    expect(result.debug.source).toBe('user_text_explicit_date');
+  });
+
+  it('normalizes ISO dates from user_text', () => {
+    const result = normalizeRuntimeAIOutputDates({
+      ai_output: validAIOutput(),
+      user_text: '2026-05-12 14:00',
+      clinic_timezone: clinicTimezone,
+      current_date_iso: '2026-05-01',
+    });
+
+    expect(result.ai_output.booking.preferred_date_iso).toBe('2026-05-12');
+    expect(result.debug.source).toBe('user_text_explicit_date');
+  });
+
   it('moves passed day-of-month to next month', () => {
     const result = normalizeRuntimeAIOutputDates({
       ai_output: validAIOutput(),

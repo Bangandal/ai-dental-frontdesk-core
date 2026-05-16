@@ -594,6 +594,64 @@ describe('runtime routes', () => {
     }
   });
 
+  it('does not normalize bare numeric phrases or call booking', async () => {
+    const repository = new FakeRuntimeTurnRepository({
+      cases: [makeCase({ collected: { service_interest: 'консультация' } })],
+    });
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'availability_request',
+      requested_action: 'check_availability',
+      reply_draft: 'AI draft should not trigger booking.',
+      booking: {
+        preferred_date_iso: null,
+        preferred_weekday: null,
+        time_of_day: null,
+        patient_confirmed_proposed_slot: false,
+        patient_rejected_proposed_slot: false,
+        selected_hold_id: null,
+      },
+    }));
+    const bookingApplyService = new FakeBookingApplyService(awaitingConfirmationResponse());
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, {
+      runtimeTurnService: new RuntimeTurnService(
+        repository,
+        aiClient,
+        bookingApplyService,
+        () => new Date('2026-05-12T10:00:00.000Z'),
+      ),
+    });
+
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/runtime/turn',
+        payload: { ...validPayload, text: 'Можно на 18?' },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        booking_result: null,
+        debug: {
+          date_normalization: {
+            source: 'none',
+            after: {
+              preferred_date_iso: null,
+              preferred_weekday: null,
+            },
+          },
+          policy_decision: {
+            should_call_booking: false,
+            reason: 'booking_interest_missing_datetime',
+          },
+        },
+      });
+      expect(bookingApplyService.calls).toEqual([]);
+    } finally {
+      await app.close();
+    }
+  });
+
   it('does not call booking when date cannot be normalized and preferred_weekday is invalid', async () => {
     const repository = new FakeRuntimeTurnRepository({
       cases: [makeCase({ collected: { service_interest: 'консультация' } })],
@@ -823,7 +881,10 @@ describe('runtime routes', () => {
       expect(response.json()).toMatchObject({
         booking_result: { booking_status: 'booked_pending_admin_confirmation' },
         side_effects: [],
-        debug: { reply_source: 'booking_result' },
+        debug: {
+          reply_source: 'booking_result',
+          date_normalization: { source: 'none' },
+        },
       });
       expect(response.json().reply_text).toContain('Администратор проверит');
       expect(response.json().side_effects).toEqual([]);
