@@ -83,6 +83,8 @@ export function buildRuntimePrompt(input: BuildRuntimePromptInput): RuntimePromp
           patient_rejected_proposed_slot: 'boolean',
           selected_hold_id: 'string|null',
         },
+        faq_topic: 'price|insurance|address|other|unknown',
+        patient_scope: 'self|another_person|multiple_people|unknown',
         handoff_recommended: 'boolean',
         kb_used: 'boolean',
         confidence: 'high|medium|low',
@@ -110,4 +112,6 @@ const RUNTIME_SYSTEM_PROMPT = [
   'If the patient gives date/time or asks availability for a date, set requested_action to check_availability or propose_slot, but do not execute it.',
   'If active_hold exists and the patient confirms it, set requested_action to confirm_slot, booking.patient_confirmed_proposed_slot true, and selected_hold_id to active_hold.hold_id.',
   'If active_hold exists and the patient rejects it, set requested_action to reject_slot, booking.patient_rejected_proposed_slot true, and selected_hold_id to active_hold.hold_id.',
+  'Set faq_topic from semantic meaning only: price, insurance, address, other, or unknown.',
+  'Set patient_scope from semantic meaning only: self, another_person, multiple_people, or unknown.',
 ].join('\n');

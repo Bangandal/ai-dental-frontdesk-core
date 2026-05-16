@@ -15,7 +15,7 @@ export interface RuntimeAIClient {
   extract(input: RuntimeAIExtractionInput): Promise<RuntimeAIOutput>;
 }
 
-export const RUNTIME_AI_SAFE_FALLBACK_REPLY = 'Извините, не совсем поняла запрос. Уточните, пожалуйста, чем можем помочь?';
+export const RUNTIME_AI_SAFE_FALLBACK_REPLY = 'Підкажіть, будь ласка, чим можемо допомогти — записом чи питанням по клініці?';
 
 export class NoopRuntimeAIClient implements RuntimeAIClient {
   async extract(): Promise<RuntimeAIOutput> {
@@ -39,6 +39,8 @@ export class NoopRuntimeAIClient implements RuntimeAIClient {
         patient_rejected_proposed_slot: false,
         selected_hold_id: null,
       },
+      faq_topic: 'unknown',
+      patient_scope: 'unknown',
       handoff_recommended: false,
       kb_used: false,
       confidence: 'low',

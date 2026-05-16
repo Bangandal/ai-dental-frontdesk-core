@@ -38,6 +38,8 @@ export const runtimeRequestedActionValues = [
 
 export const runtimeTimeOfDayValues = ['morning', 'afternoon', 'evening', 'any'] as const;
 export const runtimeConfidenceValues = ['high', 'medium', 'low'] as const;
+export const runtimeFaqTopicValues = ['price', 'insurance', 'address', 'other', 'unknown'] as const;
+export const runtimePatientScopeValues = ['self', 'another_person', 'multiple_people', 'unknown'] as const;
 
 export const runtimeAIOutputSchema = z.object({
   reply_draft: z.string().nullable(),
@@ -59,6 +61,8 @@ export const runtimeAIOutputSchema = z.object({
     patient_rejected_proposed_slot: z.boolean(),
     selected_hold_id: z.string().nullable(),
   }),
+  faq_topic: z.enum(runtimeFaqTopicValues),
+  patient_scope: z.enum(runtimePatientScopeValues),
   handoff_recommended: z.boolean(),
   kb_used: z.boolean(),
   confidence: z.enum(runtimeConfidenceValues),
@@ -75,6 +79,8 @@ export const runtimeAIOutputJsonSchema = {
     'requested_action',
     'slot_updates',
     'booking',
+    'faq_topic',
+    'patient_scope',
     'handoff_recommended',
     'kb_used',
     'confidence',
@@ -116,6 +122,8 @@ export const runtimeAIOutputJsonSchema = {
         selected_hold_id: nullableStringSchema,
       },
     },
+    faq_topic: { type: 'string', enum: runtimeFaqTopicValues },
+    patient_scope: { type: 'string', enum: runtimePatientScopeValues },
     handoff_recommended: { type: 'boolean' },
     kb_used: { type: 'boolean' },
     confidence: { type: 'string', enum: runtimeConfidenceValues },
