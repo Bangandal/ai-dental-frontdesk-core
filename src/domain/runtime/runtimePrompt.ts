@@ -6,6 +6,7 @@ import type {
   RuntimeConvoStateRecord,
 } from './runtimeTurnService.js';
 import type { RuntimeTurnInput } from './runtimeContracts.js';
+import { getClinicLocalDateIso, getClinicLocalDateTimeIso } from './runtimeDateNormalizer.js';
 
 export const RUNTIME_PROMPT_VERSION = 'runtime-ai-extraction-v1';
 
@@ -17,6 +18,7 @@ export interface BuildRuntimePromptInput {
   convoState: RuntimeConvoStateRecord;
   caseContext: RuntimeCaseContext;
   bookingContext: RuntimeBookingContext;
+  now?: Date;
 }
 
 export interface RuntimePrompt {
@@ -26,6 +28,10 @@ export interface RuntimePrompt {
 }
 
 export function buildRuntimePrompt(input: BuildRuntimePromptInput): RuntimePrompt {
+  const now = input.now ?? new Date();
+  const currentDateIso = getClinicLocalDateIso(input.clinic.timezone, now);
+  const currentDateTimeIso = getClinicLocalDateTimeIso(input.clinic.timezone, now);
+
   return {
     prompt_version: RUNTIME_PROMPT_VERSION,
     system_prompt: RUNTIME_SYSTEM_PROMPT,
@@ -33,6 +39,9 @@ export function buildRuntimePrompt(input: BuildRuntimePromptInput): RuntimePromp
       trace_id: input.traceId,
       channel: input.turn.channel,
       user_text: input.turn.text,
+      current_date_iso: currentDateIso,
+      current_datetime_iso: currentDateTimeIso,
+      clinic_timezone: input.clinic.timezone,
       clinic: {
         id: input.clinic.id,
         code: input.clinic.code,
@@ -68,7 +77,7 @@ export function buildRuntimePrompt(input: BuildRuntimePromptInput): RuntimePromp
         },
         booking: {
           preferred_date_iso: 'string|null',
-          preferred_weekday: 'string|null',
+          preferred_weekday: 'monday|tuesday|wednesday|thursday|friday|saturday|sunday|null',
           time_of_day: 'morning|afternoon|evening|any|null',
           patient_confirmed_proposed_slot: 'boolean',
           patient_rejected_proposed_slot: 'boolean',
@@ -91,6 +100,12 @@ const RUNTIME_SYSTEM_PROMPT = [
   'Use booking_context.active_hold to detect patient confirmations or rejections of a proposed held slot.',
   'Use case_context.current_case to continue an existing case and reuse already collected service interest when relevant.',
   'For Telegram, do not ask for a phone number unless the patient explicitly requests a callback.',
+  'Use context.current_date_iso and context.clinic_timezone when interpreting explicit dates.',
+  'If the patient gives explicit dates like DD.MM, DD.MM.YYYY, or YYYY-MM-DD, resolve them to booking.preferred_date_iso in YYYY-MM-DD when confident.',
+  'Ambiguous bare numbers and broad day-of-month phrases like “на 18”, “на 18 число”, “18 числа”, or “18-го” must be left as preferred_date_iso null.',
+  'booking.preferred_weekday is only for weekday names: monday, tuesday, wednesday, thursday, friday, saturday, sunday.',
+  'Never put an ISO date, numeric date, or day-of-month into booking.preferred_weekday.',
+  'If unsure about a date, leave booking.preferred_date_iso null and let backend policy ask a clarifying question.',
   'If booking interest has no date or time, set requested_action to ask_slot and draft a brief question for day/time.',
   'If the patient gives date/time or asks availability for a date, set requested_action to check_availability or propose_slot, but do not execute it.',
   'If active_hold exists and the patient confirms it, set requested_action to confirm_slot, booking.patient_confirmed_proposed_slot true, and selected_hold_id to active_hold.hold_id.',
