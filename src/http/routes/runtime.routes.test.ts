@@ -542,7 +542,7 @@ describe('runtime routes', () => {
         repository,
         aiClient,
         bookingApplyService,
-        () => new Date('2026-05-12T10:00:00.000Z'),
+        () => new Date('2026-05-01T10:00:00.000Z'),
       ),
     });
 
@@ -550,16 +550,16 @@ describe('runtime routes', () => {
       const response = await app.inject({
         method: 'POST',
         url: '/runtime/turn',
-        payload: { ...validPayload, text: 'Хочу записаться на консультацию на 16 число утром' },
+        payload: { ...validPayload, text: '12.05 на 14.00 записываем?' },
       });
 
       expect(response.statusCode).toBe(200);
       expect(bookingApplyService.calls).toHaveLength(1);
       expect(bookingApplyService.calls[0]).toMatchObject({
         bookingAction: 'propose_slot',
-        preferredDateIso: '2026-05-16',
+        preferredDateIso: '2026-05-12',
         preferredWeekday: null,
-        timeOfDay: 'morning',
+        timeOfDay: 'any',
       });
       expect(response.json()).toMatchObject({
         reply_text: 'Есть окно 16.05.2026, 09:00. Подтверждаем?',
@@ -573,17 +573,17 @@ describe('runtime routes', () => {
           },
           ai_output: {
             booking: {
-              preferred_date_iso: '2026-05-16',
+              preferred_date_iso: '2026-05-12',
               preferred_weekday: null,
-              time_of_day: 'morning',
+              time_of_day: null,
             },
           },
           date_normalization: {
-            source: 'user_text_day_of_month',
+            source: 'user_text_explicit_date',
             after: {
-              preferred_date_iso: '2026-05-16',
+              preferred_date_iso: '2026-05-12',
               preferred_weekday: null,
-              time_of_day: 'morning',
+              time_of_day: null,
             },
           },
           reply_source: 'booking_result',

@@ -6,19 +6,6 @@ import { normalizeRuntimeAIOutputDates } from './runtimeDateNormalizer.js';
 const clinicTimezone = 'Europe/Prague';
 
 describe('normalizeRuntimeAIOutputDates', () => {
-  it('normalizes Russian day-of-month with morning time in current month', () => {
-    const result = normalizeRuntimeAIOutputDates({
-      ai_output: validAIOutput(),
-      user_text: 'Хочу записаться на консультацию на 16 число утром',
-      clinic_timezone: clinicTimezone,
-      current_date_iso: '2026-05-12',
-    });
-
-    expect(result.ai_output.booking.preferred_date_iso).toBe('2026-05-16');
-    expect(result.ai_output.booking.time_of_day).toBe('morning');
-    expect(result.debug.source).toBe('user_text_day_of_month');
-  });
-
   it('does not normalize ambiguous bare numeric date phrases', () => {
     const result = normalizeRuntimeAIOutputDates({
       ai_output: validAIOutput(),
@@ -31,7 +18,7 @@ describe('normalizeRuntimeAIOutputDates', () => {
     expect(result.debug.source).toBe('none');
   });
 
-  it('normalizes explicit day-of-month phrases with число', () => {
+  it('does not normalize broad day-of-month phrases in this MVP scope', () => {
     const result = normalizeRuntimeAIOutputDates({
       ai_output: validAIOutput(),
       user_text: 'Можно на 18 число?',
@@ -39,8 +26,8 @@ describe('normalizeRuntimeAIOutputDates', () => {
       current_date_iso: '2026-05-12',
     });
 
-    expect(result.ai_output.booking.preferred_date_iso).toBe('2026-05-18');
-    expect(result.debug.source).toBe('user_text_day_of_month');
+    expect(result.ai_output.booking.preferred_date_iso).toBeNull();
+    expect(result.debug.source).toBe('none');
   });
 
   it('normalizes chat-style DD.MM dates without treating clock time as a date', () => {
@@ -81,56 +68,6 @@ describe('normalizeRuntimeAIOutputDates', () => {
     expect(result.debug.source).toBe('user_text_explicit_date');
   });
 
-  it('moves passed day-of-month to next month', () => {
-    const result = normalizeRuntimeAIOutputDates({
-      ai_output: validAIOutput(),
-      user_text: 'Можно на 16 число?',
-      clinic_timezone: clinicTimezone,
-      current_date_iso: '2026-05-20',
-    });
-
-    expect(result.ai_output.booking.preferred_date_iso).toBe('2026-06-16');
-    expect(result.debug.source).toBe('user_text_day_of_month');
-  });
-
-  it('moves December passed day-of-month to January of next year', () => {
-    const result = normalizeRuntimeAIOutputDates({
-      ai_output: validAIOutput(),
-      user_text: 'Запишите на 5 число',
-      clinic_timezone: clinicTimezone,
-      current_date_iso: '2026-12-20',
-    });
-
-    expect(result.ai_output.booking.preferred_date_iso).toBe('2027-01-05');
-    expect(result.debug.source).toBe('user_text_day_of_month');
-  });
-
-  it('normalizes tomorrow with evening time', () => {
-    const result = normalizeRuntimeAIOutputDates({
-      ai_output: validAIOutput(),
-      user_text: 'завтра вечером',
-      clinic_timezone: clinicTimezone,
-      current_date_iso: '2026-05-12',
-    });
-
-    expect(result.ai_output.booking.preferred_date_iso).toBe('2026-05-13');
-    expect(result.ai_output.booking.time_of_day).toBe('evening');
-    expect(result.debug.source).toBe('user_text_relative_day');
-  });
-
-  it('normalizes day after tomorrow with morning time', () => {
-    const result = normalizeRuntimeAIOutputDates({
-      ai_output: validAIOutput(),
-      user_text: 'послезавтра утром',
-      clinic_timezone: clinicTimezone,
-      current_date_iso: '2026-05-12',
-    });
-
-    expect(result.ai_output.booking.preferred_date_iso).toBe('2026-05-14');
-    expect(result.ai_output.booking.time_of_day).toBe('morning');
-    expect(result.debug.source).toBe('user_text_relative_day');
-  });
-
   it('clears date-like preferred_weekday and does not pass it as a weekday', () => {
     const aiOutput = validAIOutput({
       booking: {
@@ -151,6 +88,7 @@ describe('normalizeRuntimeAIOutputDates', () => {
 
     expect(result.ai_output.booking.preferred_weekday).toBeNull();
     expect(result.ai_output.booking.preferred_date_iso).toBeNull();
+    expect(result.ai_output.booking.time_of_day).toBe('morning');
     expect(result.debug.warnings).toContain('preferred_weekday_cleared:2023-10-16');
     expect(aiOutput.booking.preferred_weekday).toBe('2023-10-16');
   });
@@ -189,7 +127,7 @@ describe('normalizeRuntimeAIOutputDates', () => {
           selected_hold_id: null,
         },
       }),
-      user_text: 'на 16 число утром',
+      user_text: '12.05 на 14.00',
       clinic_timezone: clinicTimezone,
       current_date_iso: '2026-05-12',
     });
