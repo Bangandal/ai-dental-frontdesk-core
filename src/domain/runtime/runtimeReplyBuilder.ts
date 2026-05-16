@@ -11,7 +11,7 @@ export interface RuntimeReplyDecision {
 export function buildReplyFromBookingResult(bookingResult: BookingApplyResponse): RuntimeReplyDecision {
   if (bookingResult.booking_status === 'awaiting_patient_confirmation') {
     return {
-      reply_text: `Есть окно ${bookingResult.proposed_slot.label}. Подтверждаем?`,
+      reply_text: `Є вільний час ${bookingResult.proposed_slot.label}. Підтверджуємо?`,
       reply_source: 'booking_result',
     };
   }
@@ -25,7 +25,7 @@ export function buildReplyFromBookingResult(bookingResult: BookingApplyResponse)
 
   if (bookingResult.booking_status === 'booked_pending_admin_confirmation') {
     return {
-      reply_text: `Запрос на запись ${bookingResult.appointment.label} зафиксирован. Администратор проверит и подтвердит запись.`,
+      reply_text: `Запит на запис ${bookingResult.appointment.label} зафіксовано. Адміністратор перевірить і підтвердить запис.`,
       reply_source: 'booking_result',
     };
   }
@@ -40,7 +40,7 @@ export function buildReplyFromBookingResult(bookingResult: BookingApplyResponse)
   if (bookingResult.booking_status === 'not_implemented') {
     if (bookingResult.booking_action === 'cancel_hold') {
       return {
-        reply_text: 'Хорошо, это время не будем использовать. Подскажите, пожалуйста, другой удобный день или время.',
+        reply_text: 'Добре, цей час не використовуємо. Підкажіть, будь ласка, інший зручний день або час.',
         reply_source: 'booking_result',
       };
     }

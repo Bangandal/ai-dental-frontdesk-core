@@ -327,7 +327,7 @@ describe('runtime routes', () => {
 
       expect(response.statusCode).toBe(200);
       expect(response.json()).toMatchObject({
-        reply_text: 'Есть окно 16.05.2026, 09:00. Подтверждаем?',
+        reply_text: 'Є вільний час 16.05.2026, 09:00. Підтверджуємо?',
         side_effects: [],
         debug: {
           reply_source: 'booking_result',
@@ -336,7 +336,7 @@ describe('runtime routes', () => {
       });
       expect(repository.calls.outboundMessage).toMatchObject({
         caseId: '55555555-5555-5555-5555-555555555555',
-        text: 'Есть окно 16.05.2026, 09:00. Подтверждаем?',
+        text: 'Є вільний час 16.05.2026, 09:00. Підтверджуємо?',
         meta: {
           source: 'runtime_turn',
           reply_source: 'booking_result',
@@ -458,7 +458,7 @@ describe('runtime routes', () => {
           },
         },
       });
-      expect(response.json().reply_text).toContain('удобный день и время');
+      expect(response.json().reply_text).toContain('день і час');
       expect(bookingApplyService.calls).toEqual([]);
     } finally {
       await app.close();
@@ -505,7 +505,7 @@ describe('runtime routes', () => {
         channel: 'telegram',
       });
       expect(response.json()).toMatchObject({
-        reply_text: 'Есть окно 16.05.2026, 09:00. Подтверждаем?',
+        reply_text: 'Є вільний час 16.05.2026, 09:00. Підтверджуємо?',
         booking_result: { booking_status: 'awaiting_patient_confirmation' },
         side_effects: [],
         debug: {
@@ -566,7 +566,7 @@ describe('runtime routes', () => {
         timeOfDay: 'any',
       });
       expect(response.json()).toMatchObject({
-        reply_text: 'Есть окно 12.05.2026, 09:00. Подтверждаем?',
+        reply_text: 'Є вільний час 12.05.2026, 09:00. Підтверджуємо?',
         booking_result: { booking_status: 'awaiting_patient_confirmation' },
         debug: {
           ai_output_raw: {
@@ -795,7 +795,7 @@ describe('runtime routes', () => {
 
       expect(response.statusCode).toBe(200);
       expect(response.json()).toMatchObject({
-        reply_text: 'Подскажите, пожалуйста, конкретную дату для проверки записи.',
+        reply_text: 'Підкажіть, будь ласка, конкретну дату — перевірю вільні години.',
         booking_result: null,
         side_effects: [],
         debug: {
@@ -837,7 +837,7 @@ describe('runtime routes', () => {
 
       expect(response.statusCode).toBe(200);
       expect(response.json()).toMatchObject({
-        reply_text: 'На какую процедуру или консультацию хотите записаться?',
+        reply_text: 'Підкажіть, будь ласка, на яку послугу або консультацію хочете записатися?',
         booking_result: null,
         side_effects: [],
         debug: {
@@ -890,7 +890,7 @@ describe('runtime routes', () => {
           date_normalization: { source: 'none' },
         },
       });
-      expect(response.json().reply_text).toContain('Администратор проверит');
+      expect(response.json().reply_text).toContain('Адміністратор перевірить');
       expect(response.json().side_effects).toEqual([]);
       expect(repository.mutationCalls).toEqual([]);
     } finally {
@@ -929,7 +929,7 @@ describe('runtime routes', () => {
         side_effects: [],
         debug: { reply_source: 'booking_result' },
       });
-      expect(response.json().reply_text).toContain('это время не будем использовать');
+      expect(response.json().reply_text).toContain('цей час не використовуємо');
       expect(response.json().reply_text).not.toContain('отмен');
     } finally {
       await app.close();
@@ -967,6 +967,306 @@ describe('runtime routes', () => {
         side_effects: [],
         debug: { reply_source: 'booking_result' },
       });
+    } finally {
+      await app.close();
+    }
+  });
+
+
+  it('builds natural booking-interest reply without calling booking', async () => {
+    const repository = new FakeRuntimeTurnRepository();
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'booking',
+      requested_action: 'ask_slot',
+      reply_draft: 'Invalid booking request.',
+    }));
+    const bookingApplyService = new FakeBookingApplyService(noBookingResponse());
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, {
+      runtimeTurnService: new RuntimeTurnService(repository, aiClient, bookingApplyService),
+    });
+
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/runtime/turn',
+        payload: { ...validPayload, text: 'можно записаться?' },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        reply_text: 'Підкажіть, будь ласка, який день і час Вам зручні 🙂',
+        booking_result: null,
+        side_effects: [],
+        debug: {
+          conversation_mode: 'booking_interest',
+          reply_source: 'policy',
+          policy_decision: { reason: 'booking_interest_missing_datetime' },
+        },
+      });
+      expect(bookingApplyService.calls).toEqual([]);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('classifies price FAQ and keeps concise FAQ reply', async () => {
+    const repository = new FakeRuntimeTurnRepository();
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'faq',
+      requested_action: 'answer_faq',
+      reply_draft: 'Консультація коштує 500 Kč.',
+    }));
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, { runtimeTurnService: new RuntimeTurnService(repository, aiClient) });
+
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/runtime/turn',
+        payload: { ...validPayload, text: 'скільки коштує консультація?' },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        reply_text: 'Консультація коштує 500 Kč.',
+        booking_result: null,
+        side_effects: [],
+        debug: { conversation_mode: 'faq_price', reply_source: 'ai_draft' },
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('returns address reply and prepares telegram location_packet side_effect', async () => {
+    const repository = new FakeRuntimeTurnRepository({
+      notificationSettings: {
+        location_packet: {
+          address: 'Praha 1, Dlouhá 10',
+          maps_url: 'https://maps.example/clinic-one',
+          photo_keys: ['clinic-front'],
+        },
+      },
+    });
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'faq',
+      requested_action: 'answer_faq',
+      reply_draft: null,
+    }));
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, { runtimeTurnService: new RuntimeTurnService(repository, aiClient) });
+
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/runtime/turn',
+        payload: { ...validPayload, text: 'скиньте адресу і геолокацію' },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        reply_text: 'Адреса клініки: Praha 1, Dlouhá 10.\nМапа: https://maps.example/clinic-one',
+        booking_result: null,
+        side_effects: [{
+          type: 'location_packet',
+          channel: 'telegram',
+          address: 'Praha 1, Dlouhá 10',
+          maps_url: 'https://maps.example/clinic-one',
+          photo_keys: ['clinic-front'],
+        }],
+        debug: { conversation_mode: 'faq_address', reply_source: 'policy' },
+      });
+      expect(repository.calls.notification).toBeUndefined();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('keeps booked patient context when asking price FAQ after booking', async () => {
+    const latestAppointment = makeAppointment({ status: 'patient_confirmed' });
+    const repository = new FakeRuntimeTurnRepository({ latestAppointment });
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'faq',
+      requested_action: 'answer_faq',
+      reply_draft: 'Консультація коштує 500 Kč.',
+    }));
+    const bookingApplyService = new FakeBookingApplyService(noBookingResponse());
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, { runtimeTurnService: new RuntimeTurnService(repository, aiClient, bookingApplyService) });
+
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/runtime/turn',
+        payload: { ...validPayload, text: 'а скільки коштує консультація?' },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        reply_text: 'Консультація коштує 500 Kč.',
+        booking_result: null,
+        debug: {
+          conversation_mode: 'faq_price',
+          booking_context: { latest_appointment: { status: 'patient_confirmed' } },
+        },
+      });
+      expect(bookingApplyService.calls).toEqual([]);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('keeps booked patient context when asking address and returns location side_effect', async () => {
+    const latestAppointment = makeAppointment({ status: 'patient_confirmed' });
+    const repository = new FakeRuntimeTurnRepository({
+      latestAppointment,
+      notificationSettings: {
+        address: 'Praha 2, Klinická 5',
+        maps_url: 'https://maps.example/booked-patient',
+      },
+    });
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'faq',
+      requested_action: 'answer_faq',
+    }));
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, { runtimeTurnService: new RuntimeTurnService(repository, aiClient) });
+
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/runtime/turn',
+        payload: { ...validPayload, text: 'де ви знаходитесь?' },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        side_effects: [{ type: 'location_packet', address: 'Praha 2, Klinická 5' }],
+        debug: {
+          conversation_mode: 'faq_address',
+          booking_context: { latest_appointment: { status: 'patient_confirmed' } },
+        },
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('keeps booked patient context when asking another service question', async () => {
+    const latestAppointment = makeAppointment({ status: 'patient_confirmed' });
+    const repository = new FakeRuntimeTurnRepository({ latestAppointment });
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'faq',
+      requested_action: 'answer_faq',
+      reply_draft: 'Так, чистку також робимо. Можемо зорієнтувати по доступних годинах окремо.',
+    }));
+    const bookingApplyService = new FakeBookingApplyService(noBookingResponse());
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, { runtimeTurnService: new RuntimeTurnService(repository, aiClient, bookingApplyService) });
+
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/runtime/turn',
+        payload: { ...validPayload, text: 'а чистку ви робите?' },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        reply_text: 'Так, чистку також робимо. Можемо зорієнтувати по доступних годинах окремо.',
+        booking_result: null,
+        side_effects: [],
+        debug: { conversation_mode: 'post_booking_question' },
+      });
+      expect(bookingApplyService.calls).toEqual([]);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('keeps active hold continuity for FAQ and does not confirm or cancel the hold', async () => {
+    const activeHold = makeAppointment({ dedupeKey: 'hold-key-1' });
+    const repository = new FakeRuntimeTurnRepository({ activeHold, latestAppointment: activeHold });
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'faq',
+      requested_action: 'answer_faq',
+      reply_draft: 'Так, консультація перед лікуванням доступна.',
+    }));
+    const bookingApplyService = new FakeBookingApplyService(noBookingResponse());
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, { runtimeTurnService: new RuntimeTurnService(repository, aiClient, bookingApplyService) });
+
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/runtime/turn',
+        payload: { ...validPayload, text: 'а консультація перед цим буде?' },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        reply_text: 'Так, консультація перед лікуванням доступна.',
+        booking_result: null,
+        debug: {
+          conversation_mode: 'post_booking_question',
+          booking_context: { active_hold: { hold_id: 'hold-key-1' } },
+        },
+      });
+      expect(bookingApplyService.calls).toEqual([]);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('detects multi-patient request and routes to admin without corrupting booking state', async () => {
+    const activeHold = makeAppointment({ dedupeKey: 'hold-key-1' });
+    const repository = new FakeRuntimeTurnRepository({ activeHold, latestAppointment: activeHold, adminRecipient: '999-admin-chat' });
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'booking',
+      requested_action: 'ask_slot',
+      reply_draft: 'AI draft should not schedule another patient.',
+    }));
+    const bookingApplyService = new FakeBookingApplyService(noBookingResponse());
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, { runtimeTurnService: new RuntimeTurnService(repository, aiClient, bookingApplyService) });
+
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/runtime/turn',
+        payload: { ...validPayload, text: 'хочу записать мужа' },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        booking_result: null,
+        debug: { conversation_mode: 'multi_patient_request', reply_source: 'policy' },
+        side_effects: [{ payload: { trigger: 'multi_patient_request', reason: 'multi_patient_requires_admin_coordination' } }],
+      });
+      expect(response.json().reply_text).toContain('окремі записи');
+      expect(bookingApplyService.calls).toEqual([]);
+      expect(repository.calls.notification).toMatchObject({ recipient: '999-admin-chat' });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('uses safe natural fallback wording without system-style booking errors', async () => {
+    const repository = new FakeRuntimeTurnRepository();
+    const aiClient = new FakeRuntimeAIClient({ reply_draft: 'missing required fields' });
+    const bookingApplyService = new FakeBookingApplyService(noBookingResponse());
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, { runtimeTurnService: new RuntimeTurnService(repository, aiClient, bookingApplyService) });
+
+    try {
+      const response = await app.inject({ method: 'POST', url: '/runtime/turn', payload: validPayload });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json().reply_text).toBe(RUNTIME_AI_SAFE_FALLBACK_REPLY);
+      expect(response.json().reply_text).not.toContain('Invalid booking request');
+      expect(response.json().reply_text).not.toContain('Clarify preferred date');
+      expect(bookingApplyService.calls).toEqual([]);
     } finally {
       await app.close();
     }
@@ -1611,7 +1911,7 @@ describe('runtime routes', () => {
 
       expect(response.statusCode).toBe(200);
       expect(response.json()).toMatchObject({
-        reply_text: 'Запрос на запись 16.05.2026, 09:00 зафиксирован. Администратор проверит и подтвердит запись.',
+        reply_text: 'Запит на запис 16.05.2026, 09:00 зафіксовано. Адміністратор перевірить і підтвердить запис.',
         side_effects: [],
         debug: { admin_notification_error: { code: 'admin_notification_persistence_failed' } },
       });

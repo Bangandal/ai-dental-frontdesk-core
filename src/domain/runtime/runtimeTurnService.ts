@@ -13,8 +13,10 @@ import {
 } from './runtimeAiClient.js';
 import { buildRuntimePrompt } from './runtimePrompt.js';
 import { getClinicLocalDateIso, normalizeRuntimeAIOutputDates } from './runtimeDateNormalizer.js';
-import { decideRuntimeAction } from './runtimePolicy.js';
-import { buildReplyFromBookingResult, type RuntimeReplySource } from './runtimeReplyBuilder.js';
+import { classifyRuntimeConversationMode, type RuntimeConversationMode } from './runtimeConversationMode.js';
+import { decideRuntimeAction, type RuntimePolicyDecision } from './runtimePolicy.js';
+import { buildRuntimeReplyBehavior } from './runtimeReplyBehavior.js';
+import type { RuntimeReplySource } from './runtimeReplyBuilder.js';
 
 export interface RuntimeClinicRecord {
   id: string;
@@ -348,6 +350,9 @@ export class RuntimeTurnService {
     let replySource: RuntimeReplySource = 'safe_fallback';
     let bookingResult: BookingApplyResponse | null = null;
     let aiOutputForNotification: RuntimeAIOutput | null = null;
+    let policyDecisionForReply: RuntimePolicyDecision | null = null;
+    let conversationMode: RuntimeConversationMode = 'safe_fallback';
+    let replySideEffects: RuntimeSideEffect[] = [];
 
     try {
       const rawAIOutput = await this.aiClient.extract({
@@ -381,6 +386,7 @@ export class RuntimeTurnService {
         current_time_iso: turnStartedAt.toISOString(),
         user_text: input.text,
       });
+      policyDecisionForReply = policyDecision;
       debug.policy_decision = policyDecision;
 
       if (policyDecision.should_call_booking && policyDecision.booking_request !== null && this.bookingApplyService !== undefined) {
@@ -389,9 +395,29 @@ export class RuntimeTurnService {
         try {
           bookingResult = await this.bookingApplyService.apply(policyDecision.booking_request);
           debug.booking_result = bookingResult;
-          const replyDecision = buildReplyFromBookingResult(bookingResult);
+          conversationMode = classifyRuntimeConversationMode({
+            ai_output: aiOutput,
+            booking_result: bookingResult,
+            policy_decision: policyDecision,
+            case_context: caseContext,
+            booking_context: bookingContext,
+            user_text: input.text,
+          });
+          const replyDecision = buildRuntimeReplyBehavior({
+            conversation_mode: conversationMode,
+            booking_result: bookingResult,
+            policy_decision: policyDecision,
+            case_context: caseContext,
+            booking_context: bookingContext,
+            clinic,
+            ai_output: aiOutput,
+            user_text: input.text,
+            channel: input.channel,
+          });
           replyText = replyDecision.reply_text;
           replySource = replyDecision.reply_source;
+          replySideEffects = replyDecision.side_effects;
+          debug.conversation_mode = conversationMode;
           debug.reply_source = replySource;
         } catch (error) {
           debug.booking_error = formatBookingApplyError(error);
@@ -405,13 +431,30 @@ export class RuntimeTurnService {
         debug.booking_request = policyDecision.booking_request;
         debug.booking_error = { code: 'booking_apply_service_unavailable' };
         replyText = RUNTIME_AI_SAFE_FALLBACK_REPLY;
-      } else if (policyDecision.reply_text !== undefined) {
-        replyText = policyDecision.reply_text;
-        replySource = 'policy';
-        debug.reply_source = replySource;
       } else {
-        replyText = aiOutput.reply_draft ?? RUNTIME_AI_SAFE_FALLBACK_REPLY;
-        replySource = aiOutput.reply_draft === null ? 'safe_fallback' : 'ai_draft';
+        conversationMode = classifyRuntimeConversationMode({
+          ai_output: aiOutput,
+          booking_result: bookingResult,
+          policy_decision: policyDecision,
+          case_context: caseContext,
+          booking_context: bookingContext,
+          user_text: input.text,
+        });
+        const replyDecision = buildRuntimeReplyBehavior({
+          conversation_mode: conversationMode,
+          booking_result: bookingResult,
+          policy_decision: policyDecision,
+          case_context: caseContext,
+          booking_context: bookingContext,
+          clinic,
+          ai_output: aiOutput,
+          user_text: input.text,
+          channel: input.channel,
+        });
+        replyText = replyDecision.reply_text;
+        replySource = replyDecision.reply_source;
+        replySideEffects = replyDecision.side_effects;
+        debug.conversation_mode = conversationMode;
         debug.reply_source = replySource;
       }
     } catch (error) {
@@ -428,8 +471,31 @@ export class RuntimeTurnService {
         current_time_iso: turnStartedAt.toISOString(),
         user_text: input.text,
       });
+      policyDecisionForReply = policyDecision;
       debug.policy_decision = policyDecision;
-      replySource = 'safe_fallback';
+      conversationMode = classifyRuntimeConversationMode({
+        ai_output: null,
+        booking_result: null,
+        policy_decision: policyDecision,
+        case_context: caseContext,
+        booking_context: bookingContext,
+        user_text: input.text,
+      });
+      const replyDecision = buildRuntimeReplyBehavior({
+        conversation_mode: conversationMode,
+        booking_result: null,
+        policy_decision: policyDecisionForReply,
+        case_context: caseContext,
+        booking_context: bookingContext,
+        clinic,
+        ai_output: null,
+        user_text: input.text,
+        channel: input.channel,
+      });
+      replyText = replyDecision.reply_text;
+      replySource = replyDecision.reply_source;
+      replySideEffects = replyDecision.side_effects;
+      debug.conversation_mode = conversationMode;
       debug.reply_source = replySource;
     }
 
@@ -448,6 +514,7 @@ export class RuntimeTurnService {
           promptVersion: prompt.prompt_version,
           policyDecision: debug.policy_decision,
           bookingResult,
+          conversationMode,
         }),
       });
       debug.outbound_message_id = outboundMessage.id;
@@ -455,7 +522,7 @@ export class RuntimeTurnService {
       debug.outbound_persistence_error = formatOutboundPersistenceError(error);
     }
 
-    const sideEffects = await this.createAdminNotificationSideEffect({
+    const adminSideEffects = await this.createAdminNotificationSideEffect({
       clinic,
       contact,
       caseId: caseContext.current_case_id,
@@ -465,8 +532,10 @@ export class RuntimeTurnService {
       replySource,
       bookingResult,
       aiOutput: aiOutputForNotification,
+      conversationMode,
       debug,
     });
+    const sideEffects = [...replySideEffects, ...adminSideEffects];
 
     return {
       trace_id: traceId,
@@ -485,6 +554,7 @@ export class RuntimeTurnService {
       bookingResult: input.bookingResult,
       aiOutput: input.aiOutput,
       replySource: input.replySource,
+      conversationMode: input.conversationMode,
     });
 
     if (trigger === null) {
@@ -554,6 +624,7 @@ interface CreateAdminNotificationSideEffectInput {
   replySource: RuntimeReplySource;
   bookingResult: BookingApplyResponse | null;
   aiOutput: RuntimeAIOutput | null;
+  conversationMode: RuntimeConversationMode;
   debug: Record<string, unknown>;
 }
 
@@ -566,9 +637,18 @@ function determineAdminNotificationTrigger(input: {
   bookingResult: BookingApplyResponse | null;
   aiOutput: RuntimeAIOutput | null;
   replySource: RuntimeReplySource;
+  conversationMode: RuntimeConversationMode;
 }): AdminNotificationTrigger | null {
   if (input.replySource === 'booking_error') {
     return { trigger: 'booking_error', reason: 'booking_apply_failed' };
+  }
+
+  if (input.conversationMode === 'multi_patient_request') {
+    return { trigger: 'multi_patient_request', reason: 'multi_patient_requires_admin_coordination' };
+  }
+
+  if (input.conversationMode === 'reschedule_request') {
+    return { trigger: 'reschedule_request', reason: 'reschedule_requires_admin_coordination' };
   }
 
   if (input.bookingResult?.should_notify_admin === true) {
@@ -647,6 +727,7 @@ function buildAdminNotificationPayload(input: CreateAdminNotificationSideEffectI
     reply_text: input.replyText,
     reason: input.reason,
     trigger: input.trigger,
+    conversation_mode: input.conversationMode,
     booking_result: summarizeBookingResult(input.bookingResult),
     contact: {
       username: input.input.meta?.username ?? null,
@@ -721,6 +802,7 @@ interface BuildOutboundAssistantMessageMetaInput {
   promptVersion: string;
   policyDecision: unknown;
   bookingResult: BookingApplyResponse | null;
+  conversationMode: RuntimeConversationMode;
 }
 
 function buildOutboundAssistantMessageMeta(input: BuildOutboundAssistantMessageMetaInput): Record<string, unknown> {
@@ -732,6 +814,7 @@ function buildOutboundAssistantMessageMeta(input: BuildOutboundAssistantMessageM
     policy_decision: {
       reason: readPolicyDecisionReason(input.policyDecision),
     },
+    conversation_mode: input.conversationMode,
     booking: input.bookingResult === null ? null : {
       booking_status: input.bookingResult.booking_status,
       booking_action: input.bookingResult.booking_action,

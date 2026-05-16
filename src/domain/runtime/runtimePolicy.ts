@@ -44,7 +44,7 @@ export function decideRuntimeAction(input: RuntimePolicyInput): RuntimePolicyDec
   if (aiOutput.conversation_intent === 'off_topic') {
     return {
       ...noBooking('respond_clinic_scoped', 'off_topic'),
-      reply_text: 'Я могу помочь с вопросами клиники и записью на приём.',
+      reply_text: 'Можу допомогти з питаннями клініки або записом на прийом.',
     };
   }
 
@@ -104,7 +104,7 @@ export function decideRuntimeAction(input: RuntimePolicyInput): RuntimePolicyDec
   if (isAvailabilityRequest && !hasPreferredDate && hasPreferredWeekday) {
     return {
       ...noBooking('ask_concrete_date', 'preferred_weekday_not_supported_for_booking'),
-      reply_text: 'Подскажите, пожалуйста, конкретную дату для проверки записи.',
+      reply_text: 'Підкажіть, будь ласка, конкретну дату — перевірю вільні години.',
     };
   }
 
@@ -114,7 +114,7 @@ export function decideRuntimeAction(input: RuntimePolicyInput): RuntimePolicyDec
     if (serviceInterest === null) {
       return {
         ...noBooking('ask_service', 'missing_service_for_availability'),
-        reply_text: 'На какую процедуру или консультацию хотите записаться?',
+        reply_text: 'Підкажіть, будь ласка, на яку послугу або консультацію хочете записатися?',
       };
     }
 
@@ -143,7 +143,7 @@ export function decideRuntimeAction(input: RuntimePolicyInput): RuntimePolicyDec
   if (hasBookingInterest && !hasPreferredDateOrWeekday) {
     return {
       ...noBooking('ask_preferred_datetime', 'booking_interest_missing_datetime'),
-      reply_text: 'Подскажите, пожалуйста, удобный день и время для записи.',
+      reply_text: 'Підкажіть, будь ласка, який день і час Вам зручні 🙂',
     };
   }
 
