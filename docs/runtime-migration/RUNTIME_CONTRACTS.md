@@ -76,3 +76,43 @@
   "traceId": "uuid",
   "durationMinutes": 30
 }
+
+## RuntimeKnowledgeRepository contract (PR #17)
+
+`POST /runtime/turn` resolves clinic FAQ facts through a backend-owned knowledge repository before building clinic-fact replies.
+The repo audit found runtime docs mentioning `kb_retrieve`, but no versioned KB schema, `kb_chunks`, `kb_documents`, embeddings table, or concrete Supabase RPC migration in this repository. Until the production KB contract is versioned here, runtime depends on this TypeScript interface and unit-test fakes rather than inventing duplicate tables.
+
+`RuntimeKnowledgeRepository.searchClinicKnowledge(input)` input:
+
+```json
+{
+  "clinic_id": "uuid",
+  "faq_topic": "price|insurance|address|other|unknown",
+  "service_interest": "string|null",
+  "user_text": "string",
+  "language": "string|null",
+  "channel": "telegram",
+  "trace_id": "uuid",
+  "limit": 4
+}
+```
+
+Output:
+
+```json
+{
+  "found": true,
+  "snippets": [
+    {
+      "title": "optional title",
+      "content": "grounding fact text",
+      "source_type": "optional source type",
+      "score": 0.9,
+      "metadata": {}
+    }
+  ],
+  "debug": {}
+}
+```
+
+Runtime must answer price, insurance, address, and other FAQ facts only from returned snippets. If retrieval returns no snippets or fails, runtime uses a safe fallback and does not use general AI knowledge or hardcoded clinic facts.

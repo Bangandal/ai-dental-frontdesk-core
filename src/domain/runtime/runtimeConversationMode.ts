@@ -59,10 +59,6 @@ export function classifyRuntimeConversationMode(input: RuntimeConversationModeIn
     return 'reschedule_request';
   }
 
-  if (aiOutput.handoff_recommended === true || aiOutput.requested_action === 'handoff' || aiOutput.conversation_intent === 'urgent') {
-    return 'human_handoff';
-  }
-
   if (aiOutput.faq_topic === 'address') {
     return 'faq_address';
   }
@@ -73,6 +69,10 @@ export function classifyRuntimeConversationMode(input: RuntimeConversationModeIn
 
   if (aiOutput.faq_topic === 'insurance') {
     return 'faq_insurance';
+  }
+
+  if (aiOutput.handoff_recommended === true || aiOutput.requested_action === 'handoff' || aiOutput.conversation_intent === 'urgent') {
+    return 'human_handoff';
   }
 
   if (hasBookingContinuity(input.booking_context) && isNonBookingQuestion(aiOutput)) {

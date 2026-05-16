@@ -16,6 +16,11 @@ import { getClinicLocalDateIso, normalizeRuntimeAIOutputDates } from './runtimeD
 import { classifyRuntimeConversationMode, type RuntimeConversationMode } from './runtimeConversationMode.js';
 import { decideRuntimeAction, type RuntimePolicyDecision } from './runtimePolicy.js';
 import { buildRuntimeReplyBehavior } from './runtimeReplyBehavior.js';
+import {
+  NoopRuntimeKnowledgeRepository,
+  type RuntimeKnowledgeRepository,
+  type RuntimeKnowledgeResult,
+} from './runtimeKnowledgeRepository.js';
 import type { RuntimeReplySource } from './runtimeReplyBuilder.js';
 
 export interface RuntimeClinicRecord {
@@ -253,6 +258,7 @@ export class RuntimeTurnService {
     private readonly aiClient: RuntimeAIClient = new NoopRuntimeAIClient(),
     private readonly bookingApplyService?: RuntimeBookingApplyService,
     private readonly clock: () => Date = () => new Date(),
+    private readonly knowledgeRepository: RuntimeKnowledgeRepository = new NoopRuntimeKnowledgeRepository(),
   ) {}
 
   async handleTurn(input: RuntimeTurnInput): Promise<RuntimeTurnResult> {
@@ -353,6 +359,7 @@ export class RuntimeTurnService {
     let policyDecisionForReply: RuntimePolicyDecision | null = null;
     let conversationMode: RuntimeConversationMode = 'safe_fallback';
     let replySideEffects: RuntimeSideEffect[] = [];
+    let knowledgeResult: RuntimeKnowledgeResult | null = null;
 
     try {
       const rawAIOutput = await this.aiClient.extract({
@@ -401,6 +408,14 @@ export class RuntimeTurnService {
             case_context: caseContext,
             booking_context: bookingContext,
           });
+          knowledgeResult = await this.searchKnowledgeForTurn({
+            clinic,
+            input,
+            traceId,
+            aiOutput,
+            conversationMode,
+            debug,
+          });
           const replyDecision = buildRuntimeReplyBehavior({
             conversation_mode: conversationMode,
             booking_result: bookingResult,
@@ -410,6 +425,7 @@ export class RuntimeTurnService {
             clinic,
             ai_output: aiOutput,
             channel: input.channel,
+            knowledge_result: knowledgeResult,
           });
           replyText = replyDecision.reply_text;
           replySource = replyDecision.reply_source;
@@ -436,6 +452,14 @@ export class RuntimeTurnService {
           case_context: caseContext,
           booking_context: bookingContext,
         });
+        knowledgeResult = await this.searchKnowledgeForTurn({
+          clinic,
+          input,
+          traceId,
+          aiOutput,
+          conversationMode,
+          debug,
+        });
         const replyDecision = buildRuntimeReplyBehavior({
           conversation_mode: conversationMode,
           booking_result: bookingResult,
@@ -445,6 +469,7 @@ export class RuntimeTurnService {
           clinic,
           ai_output: aiOutput,
           channel: input.channel,
+          knowledge_result: knowledgeResult,
         });
         replyText = replyDecision.reply_text;
         replySource = replyDecision.reply_source;
@@ -483,6 +508,7 @@ export class RuntimeTurnService {
         clinic,
         ai_output: null,
         channel: input.channel,
+        knowledge_result: null,
       });
       replyText = replyDecision.reply_text;
       replySource = replyDecision.reply_source;
@@ -507,6 +533,7 @@ export class RuntimeTurnService {
           policyDecision: debug.policy_decision,
           bookingResult,
           conversationMode,
+          knowledgeResult,
         }),
       });
       debug.outbound_message_id = outboundMessage.id;
@@ -539,6 +566,36 @@ export class RuntimeTurnService {
       side_effects: sideEffects,
       debug,
     };
+  }
+
+
+  private async searchKnowledgeForTurn(input: SearchKnowledgeForTurnInput): Promise<RuntimeKnowledgeResult | null> {
+    if (!shouldSearchKnowledge(input.aiOutput, input.conversationMode)) {
+      return null;
+    }
+
+    try {
+      const result = await this.knowledgeRepository.searchClinicKnowledge({
+        clinic_id: input.clinic.id,
+        faq_topic: input.aiOutput.faq_topic,
+        service_interest: input.aiOutput.slot_updates.service_interest,
+        user_text: input.input.text,
+        language: input.input.meta?.language_code ?? null,
+        channel: input.input.channel,
+        trace_id: input.traceId,
+        limit: 4,
+      });
+
+      input.debug.kb_used = result.found;
+      input.debug.kb_result_summary = summarizeKnowledgeResult(result);
+
+      return result;
+    } catch (error) {
+      input.debug.kb_used = false;
+      input.debug.kb_error = formatKnowledgeRepositoryError(error);
+
+      return null;
+    }
   }
 
   private async createAdminNotificationSideEffect(input: CreateAdminNotificationSideEffectInput): Promise<RuntimeSideEffect[]> {
@@ -606,6 +663,15 @@ export class RuntimeTurnService {
   }
 }
 
+interface SearchKnowledgeForTurnInput {
+  clinic: RuntimeClinicRecord;
+  input: RuntimeTurnInput;
+  traceId: string;
+  aiOutput: RuntimeAIOutput;
+  conversationMode: RuntimeConversationMode;
+  debug: Record<string, unknown>;
+}
+
 interface CreateAdminNotificationSideEffectInput {
   clinic: RuntimeClinicRecord;
   contact: RuntimeContactRecord;
@@ -625,11 +691,42 @@ interface AdminNotificationTrigger {
   reason: string;
 }
 
+
+function shouldSearchKnowledge(aiOutput: RuntimeAIOutput, conversationMode: RuntimeConversationMode): boolean {
+  if (conversationMode === 'faq_price' || conversationMode === 'faq_insurance' || conversationMode === 'faq_address') {
+    return true;
+  }
+
+  if (conversationMode === 'post_booking_question' && aiOutput.conversation_intent === 'faq') {
+    return true;
+  }
+
+  return aiOutput.conversation_intent === 'faq' && aiOutput.requested_action === 'answer_faq' && aiOutput.faq_topic === 'other';
+}
+
+function summarizeKnowledgeResult(result: RuntimeKnowledgeResult): Record<string, unknown> {
+  return {
+    found: result.found,
+    snippet_count: result.snippets.length,
+    top_score: result.snippets[0]?.score ?? null,
+    source_types: [...new Set(result.snippets.map((snippet) => snippet.source_type).filter((value): value is string => value !== undefined))],
+    debug: result.debug ?? null,
+  };
+}
+
+function formatKnowledgeRepositoryError(_error: unknown): Record<string, string> {
+  return {
+    code: 'kb_retrieval_failed',
+    message: 'Knowledge retrieval failed.',
+  };
+}
+
 function determineAdminNotificationTrigger(input: {
   bookingResult: BookingApplyResponse | null;
   aiOutput: RuntimeAIOutput | null;
   replySource: RuntimeReplySource;
   conversationMode: RuntimeConversationMode;
+  knowledgeResult?: RuntimeKnowledgeResult | null;
 }): AdminNotificationTrigger | null {
   if (input.replySource === 'booking_error') {
     return { trigger: 'booking_error', reason: 'booking_apply_failed' };
@@ -795,6 +892,7 @@ interface BuildOutboundAssistantMessageMetaInput {
   policyDecision: unknown;
   bookingResult: BookingApplyResponse | null;
   conversationMode: RuntimeConversationMode;
+  knowledgeResult?: RuntimeKnowledgeResult | null;
 }
 
 function buildOutboundAssistantMessageMeta(input: BuildOutboundAssistantMessageMetaInput): Record<string, unknown> {
@@ -812,6 +910,7 @@ function buildOutboundAssistantMessageMeta(input: BuildOutboundAssistantMessageM
       booking_action: input.bookingResult.booking_action,
       reason: input.bookingResult.reason,
     },
+    knowledge: input.knowledgeResult === undefined || input.knowledgeResult === null ? null : summarizeKnowledgeResult(input.knowledgeResult),
   };
 }
 

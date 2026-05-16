@@ -4,6 +4,7 @@ import type { RuntimeAIOutput, RuntimeSideEffect, RuntimeTurnInput } from './run
 import type { RuntimeConversationMode } from './runtimeConversationMode.js';
 import type { RuntimePolicyDecision } from './runtimePolicy.js';
 import { buildReplyFromBookingResult, type RuntimeReplyDecision } from './runtimeReplyBuilder.js';
+import type { RuntimeKnowledgeResult, RuntimeKnowledgeSnippet } from './runtimeKnowledgeRepository.js';
 import type { RuntimeBookingContext, RuntimeCaseContext, RuntimeClinicRecord } from './runtimeTurnService.js';
 
 export interface RuntimeReplyBehaviorInput {
@@ -15,6 +16,7 @@ export interface RuntimeReplyBehaviorInput {
   clinic: RuntimeClinicRecord;
   ai_output: RuntimeAIOutput | null;
   channel: RuntimeTurnInput['channel'];
+  knowledge_result?: RuntimeKnowledgeResult | null;
 }
 
 export interface RuntimeReplyBehaviorResult extends RuntimeReplyDecision {
@@ -31,19 +33,19 @@ export function buildRuntimeReplyBehavior(input: RuntimeReplyBehaviorInput): Run
 
   if (input.conversation_mode === 'faq_address') {
     const locationPacket = buildLocationPacket(input.clinic.settings, input.channel);
-    const aiDraft = readNonEmpty(input.ai_output?.reply_draft);
+    const kbReply = buildGroundedKnowledgeReply(input.knowledge_result, input.ai_output?.faq_topic ?? 'address');
 
     if (locationPacket !== null) {
       return {
-        reply_text: buildAddressReply(locationPacket),
-        reply_source: 'policy',
+        reply_text: kbReply ?? buildAddressReply(locationPacket),
+        reply_source: kbReply === null ? 'policy' : 'kb',
         side_effects: [locationPacket],
       };
     }
 
     return {
-      reply_text: aiDraft ?? 'Підкажіть, будь ласка, з якою філією або адресою допомогти? Я зорієнтую.',
-      reply_source: aiDraft === undefined ? 'safe_fallback' : 'ai_draft',
+      reply_text: kbReply ?? 'Уточню це в адміністратора й повернуся з точною адресою або орієнтирами.',
+      reply_source: kbReply === null ? 'safe_fallback' : 'kb',
       side_effects: [],
     };
   }
@@ -80,12 +82,12 @@ export function buildRuntimeReplyBehavior(input: RuntimeReplyBehaviorInput): Run
     };
   }
 
-  const aiDraft = readNonEmpty(input.ai_output?.reply_draft);
+  const kbReply = buildGroundedKnowledgeReply(input.knowledge_result, input.ai_output?.faq_topic ?? 'unknown');
 
-  if (aiDraft !== undefined) {
+  if (kbReply !== null && isKnowledgeAnswerMode(input)) {
     return {
-      reply_text: aiDraft,
-      reply_source: 'ai_draft',
+      reply_text: kbReply,
+      reply_source: 'kb',
       side_effects: [],
     };
   }
@@ -107,9 +109,29 @@ export function buildRuntimeReplyBehavior(input: RuntimeReplyBehaviorInput): Run
   }
 
   if (input.conversation_mode === 'post_booking_question') {
+    const aiDraft = readNonEmpty(input.ai_output?.reply_draft);
+
+    if (aiDraft !== undefined && (input.ai_output?.faq_topic === 'unknown' || input.ai_output?.faq_topic === 'other')) {
+      return {
+        reply_text: aiDraft,
+        reply_source: 'ai_draft',
+        side_effects: [],
+      };
+    }
+
     return {
       reply_text: 'Ваш запис бачу в контексті. Напишіть, будь ласка, яке саме питання — допоможу або передам адміністратору.',
       reply_source: 'safe_fallback',
+      side_effects: [],
+    };
+  }
+
+  const aiDraft = readNonEmpty(input.ai_output?.reply_draft);
+
+  if (aiDraft !== undefined) {
+    return {
+      reply_text: aiDraft,
+      reply_source: 'ai_draft',
       side_effects: [],
     };
   }
@@ -119,6 +141,59 @@ export function buildRuntimeReplyBehavior(input: RuntimeReplyBehaviorInput): Run
     reply_source: 'safe_fallback',
     side_effects: [],
   };
+}
+
+
+function isKnowledgeAnswerMode(input: RuntimeReplyBehaviorInput): boolean {
+  return input.conversation_mode === 'faq_price'
+    || input.conversation_mode === 'faq_insurance'
+    || input.conversation_mode === 'faq_address'
+    || input.conversation_mode === 'post_booking_question'
+    || input.ai_output?.conversation_intent === 'faq'
+    || input.ai_output?.requested_action === 'answer_faq';
+}
+
+function buildGroundedKnowledgeReply(
+  knowledgeResult: RuntimeKnowledgeResult | null | undefined,
+  faqTopic: RuntimeAIOutput['faq_topic'],
+): string | null {
+  if (knowledgeResult?.found !== true) {
+    return null;
+  }
+
+  const snippets = knowledgeResult.snippets
+    .map(formatKnowledgeSnippet)
+    .filter((snippet): snippet is string => snippet !== null);
+
+  if (snippets.length === 0) {
+    return null;
+  }
+
+  const body = snippets.slice(0, 2).join('\n');
+
+  if (faqTopic === 'price') {
+    return `За інформацією клініки: ${body}
+Якщо потрібно, адміністратор уточнить актуальну вартість для Вашого випадку.`;
+  }
+
+  if (faqTopic === 'insurance') {
+    return `За інформацією клініки: ${body}
+Якщо покриття залежить від страхової або полісу, адміністратор може перевірити деталі.`;
+  }
+
+  return body;
+}
+
+function formatKnowledgeSnippet(snippet: RuntimeKnowledgeSnippet): string | null {
+  const content = readNonEmpty(snippet.content);
+
+  if (content === undefined) {
+    return null;
+  }
+
+  const title = readNonEmpty(snippet.title);
+
+  return title === undefined ? content : `${title}: ${content}`;
 }
 
 interface LocationPacketSideEffect extends RuntimeSideEffect {
