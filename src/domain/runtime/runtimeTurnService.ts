@@ -389,6 +389,7 @@ export class RuntimeTurnService {
         meta: input.meta,
         trace_id: traceId,
         current_time_iso: turnStartedAt.toISOString(),
+        current_clinic_date_iso: currentDateIso,
       });
       policyDecisionForReply = policyDecision;
       debug.policy_decision = policyDecision;

@@ -44,6 +44,19 @@
   },
   "requested_action": "continue|ask_slot|answer_faq|handoff|complete_intake|clarify|greeting|stop|check_availability|propose_slot|await_confirmation|confirm_slot|reject_slot|create_appointment",
   "conversation_intent": "greeting|faq|booking|availability_request|patient_confirmation|slot_rejected|objection|urgent|correction|off_topic|post_handoff_ack|follow_up|multi_patient_request|reschedule|cancel_appointment|unknown",
+  "availability_query": {
+    "search_type": "nearest_available|specific_date|weekday|relative_day|exact_slot|time_constraint|unknown",
+    "date_iso": null,
+    "weekday": "monday|tuesday|wednesday|thursday|friday|saturday|sunday|null",
+    "relative_day": "today|tomorrow|day_after_tomorrow|null",
+    "time_window": {
+      "type": "morning|afternoon|evening|before|after|between|any",
+      "start_time": "HH:mm|null",
+      "end_time": "HH:mm|null"
+    },
+    "exact_time": "HH:mm|null",
+    "flexibility": "specific|flexible|nearest|unknown"
+  },
   "booking": {
     "preferred_date_iso": null,
     "preferred_weekday": null,

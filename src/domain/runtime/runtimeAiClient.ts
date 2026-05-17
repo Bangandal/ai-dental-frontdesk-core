@@ -31,6 +31,15 @@ export class NoopRuntimeAIClient implements RuntimeAIClient {
         preferred_time: null,
         preferred_contact: null,
       },
+      availability_query: {
+        search_type: 'unknown',
+        date_iso: null,
+        weekday: null,
+        relative_day: null,
+        time_window: null,
+        exact_time: null,
+        flexibility: 'unknown',
+      },
       booking: {
         preferred_date_iso: null,
         preferred_weekday: null,

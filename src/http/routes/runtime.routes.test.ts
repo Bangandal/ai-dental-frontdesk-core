@@ -118,6 +118,19 @@ describe('runtime routes', () => {
               preferred_time: 'string|null',
               preferred_contact: 'string|null',
             },
+            availability_query: {
+              search_type: 'nearest_available|specific_date|weekday|relative_day|exact_slot|time_constraint|unknown',
+              date_iso: 'YYYY-MM-DD|null',
+              weekday: 'monday|tuesday|wednesday|thursday|friday|saturday|sunday|null',
+              relative_day: 'today|tomorrow|day_after_tomorrow|null',
+              time_window: {
+                type: 'morning|afternoon|evening|before|after|between|any',
+                start_time: 'HH:mm|null',
+                end_time: 'HH:mm|null',
+              },
+              exact_time: 'HH:mm|null',
+              flexibility: 'specific|flexible|nearest|unknown',
+            },
             booking: {
               preferred_date_iso: 'string|null',
               preferred_weekday: 'monday|tuesday|wednesday|thursday|friday|saturday|sunday|null',
@@ -536,7 +549,7 @@ describe('runtime routes', () => {
           reply_source: 'booking_result',
           prompt_version: 'runtime-ai-extraction-v1',
           policy_decision: {
-            reason: 'availability_request_with_service_and_date',
+            reason: 'availability_specific_date_from_legacy_booking',
           },
           booking: {
             booking_status: 'awaiting_patient_confirmation',
@@ -704,7 +717,7 @@ describe('runtime routes', () => {
         side_effects: [],
         debug: {
           reply_source: 'booking_result',
-          policy_decision: { should_call_booking: true, reason: 'availability_request_with_service_and_date' },
+          policy_decision: { should_call_booking: true, reason: 'availability_specific_date_from_legacy_booking' },
         },
       });
     } finally {
@@ -840,7 +853,7 @@ describe('runtime routes', () => {
           },
           policy_decision: {
             should_call_booking: false,
-            reason: 'booking_interest_missing_datetime',
+            reason: 'availability_query_unknown',
           },
         },
       });
@@ -887,9 +900,9 @@ describe('runtime routes', () => {
 
       expect(response.statusCode).toBe(200);
       expect(response.json()).toMatchObject({
-        booking_result: null,
+        booking_result: { booking_status: 'awaiting_patient_confirmation' },
         debug: {
-          reply_source: 'policy',
+          reply_source: 'booking_result',
           date_normalization: {
             source: 'none',
             after: {
@@ -899,12 +912,13 @@ describe('runtime routes', () => {
             },
           },
           policy_decision: {
-            should_call_booking: false,
-            reason: 'booking_interest_missing_datetime',
+            should_call_booking: true,
+            reason: 'availability_time_constraint_from_legacy_booking',
           },
         },
       });
-      expect(bookingApplyService.calls).toEqual([]);
+      expect(bookingApplyService.calls).toHaveLength(1);
+      expect(bookingApplyService.calls[0]).toMatchObject({ timeOfDay: 'morning' });
     } finally {
       await app.close();
     }
@@ -989,16 +1003,124 @@ describe('runtime routes', () => {
 
       expect(response.statusCode).toBe(200);
       expect(response.json()).toMatchObject({
-        reply_text: 'Підкажіть, будь ласка, конкретну дату — перевірю вільні години.',
-        booking_result: null,
+        reply_text: 'Є вільний час 16.05.2026, 09:00. Підтверджуємо?',
+        booking_result: { booking_status: 'awaiting_patient_confirmation' },
         side_effects: [],
         debug: {
-          reply_source: 'policy',
+          reply_source: 'booking_result',
           policy_decision: {
-            should_call_booking: false,
-            reason: 'preferred_weekday_not_supported_for_booking',
+            should_call_booking: true,
+            reason: 'availability_weekday_from_legacy_booking',
           },
         },
+      });
+      expect(bookingApplyService.calls).toHaveLength(1);
+      expect(bookingApplyService.calls[0]).toMatchObject({ preferredDateIso: '2026-05-18', preferredWeekday: 'monday' });
+    } finally {
+      await app.close();
+    }
+  });
+
+
+
+  it('calls booking for nearest availability query with service', async () => {
+    const repository = new FakeRuntimeTurnRepository({ cases: [makeCase({ collected: { service_interest: 'консультация' } })] });
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'availability_request',
+      requested_action: 'check_availability',
+      availability_query: availabilityQuery({ search_type: 'nearest_available', flexibility: 'nearest' }),
+    }));
+    const bookingApplyService = new FakeBookingApplyService(awaitingConfirmationResponse());
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, { runtimeTurnService: new RuntimeTurnService(repository, aiClient, bookingApplyService) });
+
+    try {
+      const response = await app.inject({ method: 'POST', url: '/runtime/turn', payload: { ...validPayload, text: 'когда есть свободно?' } });
+
+      expect(response.statusCode).toBe(200);
+      expect(bookingApplyService.calls).toHaveLength(1);
+      expect(bookingApplyService.calls[0]).toMatchObject({
+        bookingAction: 'propose_slot',
+        serviceInterest: 'консультация',
+        preferredDateIso: null,
+        timeOfDay: 'any',
+        metadata: { availability_query: { search_type: 'nearest_available' } },
+      });
+      expect(response.json()).toMatchObject({
+        booking_result: { booking_status: 'awaiting_patient_confirmation' },
+        debug: { reply_source: 'booking_result', policy_decision: { reason: 'availability_nearest_available' } },
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('calls booking for typed Saturday availability with resolved clinic-local date', async () => {
+    const repository = new FakeRuntimeTurnRepository({ cases: [makeCase({ collected: { service_interest: 'консультация' } })] });
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'availability_request',
+      requested_action: 'check_availability',
+      availability_query: availabilityQuery({ search_type: 'weekday', weekday: 'saturday' }),
+    }));
+    const bookingApplyService = new FakeBookingApplyService(awaitingConfirmationResponse());
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, {
+      runtimeTurnService: new RuntimeTurnService(repository, aiClient, bookingApplyService, () => new Date('2026-05-12T10:00:00.000Z')),
+    });
+
+    try {
+      const response = await app.inject({ method: 'POST', url: '/runtime/turn', payload: { ...validPayload, text: 'на субботу' } });
+
+      expect(response.statusCode).toBe(200);
+      expect(bookingApplyService.calls[0]).toMatchObject({ preferredDateIso: '2026-05-16', preferredWeekday: 'saturday' });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('calls booking for typed before-10 availability and preserves time constraint metadata', async () => {
+    const repository = new FakeRuntimeTurnRepository({ cases: [makeCase({ collected: { service_interest: 'консультация' } })] });
+    const timeWindow = { type: 'before' as const, start_time: null, end_time: '10:00' };
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'availability_request',
+      requested_action: 'check_availability',
+      availability_query: availabilityQuery({ search_type: 'time_constraint', time_window: timeWindow }),
+    }));
+    const bookingApplyService = new FakeBookingApplyService(awaitingConfirmationResponse());
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, { runtimeTurnService: new RuntimeTurnService(repository, aiClient, bookingApplyService) });
+
+    try {
+      const response = await app.inject({ method: 'POST', url: '/runtime/turn', payload: { ...validPayload, text: 'до 10' } });
+
+      expect(response.statusCode).toBe(200);
+      expect(bookingApplyService.calls[0]).toMatchObject({
+        timeOfDay: 'morning',
+        metadata: { time_window: timeWindow },
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('asks clarification for unknown availability query without calling booking', async () => {
+    const repository = new FakeRuntimeTurnRepository({ cases: [makeCase({ collected: { service_interest: 'консультация' } })] });
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'availability_request',
+      requested_action: 'check_availability',
+      availability_query: availabilityQuery({ search_type: 'unknown' }),
+    }));
+    const bookingApplyService = new FakeBookingApplyService(awaitingConfirmationResponse());
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, { runtimeTurnService: new RuntimeTurnService(repository, aiClient, bookingApplyService) });
+
+    try {
+      const response = await app.inject({ method: 'POST', url: '/runtime/turn', payload: { ...validPayload, text: 'а другой час?' } });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        booking_result: null,
+        debug: { reply_source: 'policy', policy_decision: { reason: 'availability_query_unknown' } },
       });
       expect(bookingApplyService.calls).toEqual([]);
     } finally {
@@ -2739,6 +2861,22 @@ class ThrowingRuntimeAIClient implements RuntimeAIClient {
   }
 }
 
+
+function availabilityQuery(
+  overrides: Partial<NonNullable<RuntimeAIOutput['availability_query']>> = {},
+): NonNullable<RuntimeAIOutput['availability_query']> {
+  return {
+    search_type: 'unknown',
+    date_iso: null,
+    weekday: null,
+    relative_day: null,
+    time_window: null,
+    exact_time: null,
+    flexibility: 'unknown',
+    ...overrides,
+  };
+}
+
 function validAIOutput(overrides: Partial<RuntimeAIOutput> = {}): RuntimeAIOutput {
   const base: RuntimeAIOutput = {
     reply_draft: null,
@@ -2751,6 +2889,15 @@ function validAIOutput(overrides: Partial<RuntimeAIOutput> = {}): RuntimeAIOutpu
       phone: null,
       preferred_time: null,
       preferred_contact: null,
+    },
+    availability_query: {
+      search_type: 'unknown',
+      date_iso: null,
+      weekday: null,
+      relative_day: null,
+      time_window: null,
+      exact_time: null,
+      flexibility: 'unknown',
     },
     booking: {
       preferred_date_iso: null,

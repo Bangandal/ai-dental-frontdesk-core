@@ -1,5 +1,6 @@
 import type { BookingApplyRequest, TimeOfDay } from '../booking/bookingApply.js';
 import type { RuntimeAIOutput, RuntimeTurnInput } from './runtimeContracts.js';
+import { planRuntimeAvailability } from './runtimeAvailabilityPlanner.js';
 import type { RuntimeBookingContext, RuntimeCaseContext, RuntimeClinicRecord } from './runtimeTurnService.js';
 
 export interface RuntimePolicyInput {
@@ -12,6 +13,7 @@ export interface RuntimePolicyInput {
   meta?: RuntimeTurnInput['meta'];
   trace_id: string;
   current_time_iso?: string;
+  current_clinic_date_iso?: string;
 }
 
 export interface RuntimePolicyDecision {
@@ -94,47 +96,35 @@ export function decideRuntimeAction(input: RuntimePolicyInput): RuntimePolicyDec
     });
   }
 
-  const hasPreferredDate = readNonEmpty(booking.preferred_date_iso) !== undefined;
-  const hasPreferredWeekday = readNonEmpty(booking.preferred_weekday) !== undefined;
-  const hasPreferredDateOrWeekday = hasPreferredDate || hasPreferredWeekday;
   const isAvailabilityRequest = availabilityActions.has(aiOutput.requested_action)
     || aiOutput.conversation_intent === 'availability_request';
 
-  if (isAvailabilityRequest && !hasPreferredDate && hasPreferredWeekday) {
+  if (isAvailabilityRequest) {
+    const availabilityDecision = planRuntimeAvailability({
+      ai_output: aiOutput,
+      case_context: input.case_context,
+      booking_context: input.booking_context,
+      clinic: input.clinic,
+      contact_id: input.contact_id,
+      channel: input.channel,
+      meta: input.meta,
+      trace_id: input.trace_id,
+      current_time_iso: input.current_time_iso,
+      current_clinic_date_iso: input.current_clinic_date_iso ?? readDatePart(input.current_time_iso) ?? new Date().toISOString().slice(0, 10),
+    });
     return {
-      ...noBooking('ask_concrete_date', 'preferred_weekday_not_supported_for_booking'),
-      reply_text: 'Підкажіть, будь ласка, конкретну дату — перевірю вільні години.',
+      next_action: availabilityDecision.booking_action ?? (availabilityDecision.should_call_booking ? 'propose_slot' : 'ask_preferred_datetime'),
+      should_call_booking: availabilityDecision.should_call_booking,
+      booking_request: availabilityDecision.booking_request,
+      reason: availabilityDecision.reason,
+      warnings: availabilityDecision.warnings,
+      reply_text: availabilityDecision.reply_text,
     };
   }
 
-  if (isAvailabilityRequest && hasPreferredDate) {
-    const serviceInterest = readServiceInterest(input);
-
-    if (serviceInterest === null) {
-      return {
-        ...noBooking('ask_service', 'missing_service_for_availability'),
-        reply_text: 'Підкажіть, будь ласка, на яку послугу або консультацію хочете записатися?',
-      };
-    }
-
-    return callBooking('propose_slot', 'availability_request_with_service_and_date', {
-      clinicId: input.clinic.id,
-      contactId: input.contact_id,
-      caseId: input.case_context.current_case_id,
-      bookingAction: 'propose_slot',
-      serviceInterest,
-      preferredDateIso: readNonEmpty(booking.preferred_date_iso) ?? null,
-      preferredWeekday: readNonEmpty(booking.preferred_weekday) ?? null,
-      timeOfDay: normalizeTimeOfDay(booking.time_of_day),
-      activeHoldId: null,
-      patientName: readPatientName(input.meta),
-      channel: input.channel,
-      traceId: input.trace_id,
-      durationMinutes: 30,
-      metadata: buildPolicyMetadata(input, 'propose_slot'),
-    });
-  }
-
+  const hasPreferredDate = readNonEmpty(booking.preferred_date_iso) !== undefined;
+  const hasPreferredWeekday = readNonEmpty(booking.preferred_weekday) !== undefined;
+  const hasPreferredDateOrWeekday = hasPreferredDate || hasPreferredWeekday;
   const hasBookingInterest = bookingIntents.has(aiOutput.conversation_intent)
     || bookingInterestActions.has(aiOutput.requested_action)
     || isAvailabilityRequest;
@@ -210,4 +200,8 @@ function buildPolicyMetadata(input: RuntimePolicyInput, policyAction: string): R
     clinic_timezone: input.clinic.timezone,
     current_time_iso: input.current_time_iso ?? null,
   };
+}
+
+function readDatePart(value: string | undefined): string | undefined {
+  return typeof value === 'string' && value.length >= 10 ? value.slice(0, 10) : undefined;
 }
