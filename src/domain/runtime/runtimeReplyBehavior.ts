@@ -3,6 +3,7 @@ import { RUNTIME_AI_SAFE_FALLBACK_REPLY } from './runtimeAiClient.js';
 import type { RuntimeAIOutput, RuntimeSideEffect, RuntimeTurnInput } from './runtimeContracts.js';
 import type { RuntimeConversationMode } from './runtimeConversationMode.js';
 import type { RuntimePolicyDecision } from './runtimePolicy.js';
+import type { RuntimeKnowledgeResult } from './runtimeKnowledgeRepository.js';
 import { buildReplyFromBookingResult, type RuntimeReplyDecision } from './runtimeReplyBuilder.js';
 import type { RuntimeBookingContext, RuntimeCaseContext, RuntimeClinicRecord } from './runtimeTurnService.js';
 
@@ -15,6 +16,7 @@ export interface RuntimeReplyBehaviorInput {
   clinic: RuntimeClinicRecord;
   ai_output: RuntimeAIOutput | null;
   channel: RuntimeTurnInput['channel'];
+  knowledge_result?: RuntimeKnowledgeResult | null;
 }
 
 export interface RuntimeReplyBehaviorResult extends RuntimeReplyDecision {
@@ -80,9 +82,19 @@ export function buildRuntimeReplyBehavior(input: RuntimeReplyBehaviorInput): Run
     };
   }
 
+  const knowledgeReply = buildKnowledgeReply(input.knowledge_result);
+
+  if (knowledgeReply !== null && isKnowledgeGroundedMode(input.conversation_mode)) {
+    return {
+      reply_text: knowledgeReply,
+      reply_source: 'kb',
+      side_effects: [],
+    };
+  }
+
   const aiDraft = readNonEmpty(input.ai_output?.reply_draft);
 
-  if (aiDraft !== undefined) {
+  if (aiDraft !== undefined && !requiresKnowledgeGrounding(input.conversation_mode)) {
     return {
       reply_text: aiDraft,
       reply_source: 'ai_draft',
@@ -175,4 +187,28 @@ function readStringArray(value: unknown): string[] | undefined {
   const strings = value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0);
 
   return strings.length === value.length ? strings : undefined;
+}
+
+function buildKnowledgeReply(knowledgeResult: RuntimeKnowledgeResult | null | undefined): string | null {
+  if (knowledgeResult?.found !== true) {
+    return null;
+  }
+
+  const contextText = readNonEmpty(knowledgeResult.context_text);
+
+  if (contextText !== undefined) {
+    return contextText;
+  }
+
+  const firstSnippet = knowledgeResult.snippets.find((snippet) => readNonEmpty(snippet.content) !== undefined);
+
+  return firstSnippet === undefined ? null : firstSnippet.content;
+}
+
+function isKnowledgeGroundedMode(mode: RuntimeConversationMode): boolean {
+  return mode === 'faq_price' || mode === 'faq_insurance' || mode === 'post_booking_question';
+}
+
+function requiresKnowledgeGrounding(mode: RuntimeConversationMode): boolean {
+  return isKnowledgeGroundedMode(mode);
 }

@@ -21,6 +21,8 @@ import {
 } from '../../domain/runtime/runtimeAiClient.js';
 import { RuntimeAIProviderError } from '../../domain/runtime/openAiRuntimeClient.js';
 import type { RuntimeAIOutput } from '../../domain/runtime/runtimeContracts.js';
+import type { RuntimeEmbeddingClient } from '../../domain/runtime/runtimeEmbeddingClient.js';
+import type { RuntimeKnowledgeRepository, RuntimeKnowledgeRetrieveInput, RuntimeKnowledgeResult } from '../../domain/runtime/runtimeKnowledgeRepository.js';
 import { RuntimeTurnService } from '../../domain/runtime/runtimeTurnService.js';
 import { createRuntimeAIClient, registerRuntimeRoutes } from './runtime.routes.js';
 
@@ -255,6 +257,196 @@ describe('runtime routes', () => {
     }
   });
 
+
+
+  it('uses KB context for grounded FAQ price replies and blocks invented AI prices', async () => {
+    const repository = new FakeRuntimeTurnRepository();
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'faq',
+      requested_action: 'answer_faq',
+      faq_topic: 'price',
+      slot_updates: { service_interest: 'hygiene' },
+      reply_draft: 'Вигадана ціна 999 Kč.',
+    }));
+    const embeddingClient = new FakeRuntimeEmbeddingClient(makeEmbedding());
+    const knowledgeRepository = new FakeRuntimeKnowledgeRepository({
+      found: true,
+      count: 1,
+      top_similarity: 0.82,
+      context_text: 'Професійна гігієна коштує від 1200 грн.',
+      snippets: [{
+        title: 'Hygiene price',
+        content: 'Професійна гігієна коштує від 1200 грн.',
+        metadata: { source_type: 'faq' },
+        score: 0.82,
+        source_type: 'faq',
+      }],
+    });
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, {
+      runtimeTurnService: new RuntimeTurnService(
+        repository,
+        aiClient,
+        undefined,
+        undefined,
+        knowledgeRepository,
+        embeddingClient,
+      ),
+    });
+
+    try {
+      const response = await app.inject({ method: 'POST', url: '/runtime/turn', payload: { ...validPayload, text: 'Скільки коштує гігієна?', meta: { ...validPayload.meta, language_code: 'uk' } } });
+      const expectedKnowledgeQuery = [
+        'faq_topic: price',
+        'service_interest: hygiene',
+        'question: Скільки коштує гігієна?',
+        'language: uk',
+      ].join('\n');
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        reply_text: 'Професійна гігієна коштує від 1200 грн.',
+        debug: {
+          reply_source: 'kb',
+          kb_query: {
+            query_text: expectedKnowledgeQuery,
+          },
+          kb_result: {
+            found: true,
+            count: 1,
+            top_similarity: 0.82,
+          },
+        },
+      });
+      expect(embeddingClient.calls).toEqual([{ text: expectedKnowledgeQuery, trace_id: expect.any(String) }]);
+      expect(knowledgeRepository.calls[0]).toMatchObject({
+        clinicId: '11111111-1111-1111-1111-111111111111',
+        queryEmbedding: makeEmbedding(),
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('falls back safely when KB has no price hit instead of using AI factual price', async () => {
+    const repository = new FakeRuntimeTurnRepository();
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'faq',
+      requested_action: 'answer_faq',
+      faq_topic: 'price',
+      reply_draft: 'Вигадана ціна 999 Kč.',
+    }));
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, {
+      runtimeTurnService: new RuntimeTurnService(
+        repository,
+        aiClient,
+        undefined,
+        undefined,
+        new FakeRuntimeKnowledgeRepository({
+          found: false,
+          count: 0,
+          top_similarity: null,
+          context_text: null,
+          snippets: [],
+        }),
+        new FakeRuntimeEmbeddingClient(makeEmbedding()),
+      ),
+    });
+
+    try {
+      const response = await app.inject({ method: 'POST', url: '/runtime/turn', payload: validPayload });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        reply_text: 'Підкажіть, будь ласка, яка саме послуга цікавить — зорієнтую по вартості.',
+        debug: {
+          reply_source: 'safe_fallback',
+          kb_result: { found: false, count: 0 },
+        },
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('falls back safely when KB retrieval fails', async () => {
+    const repository = new FakeRuntimeTurnRepository();
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'faq',
+      requested_action: 'answer_faq',
+      faq_topic: 'price',
+      reply_draft: 'Вигадана ціна 999 Kč.',
+    }));
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, {
+      runtimeTurnService: new RuntimeTurnService(
+        repository,
+        aiClient,
+        undefined,
+        undefined,
+        new ThrowingRuntimeKnowledgeRepository(new Error('KB down')),
+        new FakeRuntimeEmbeddingClient(makeEmbedding()),
+      ),
+    });
+
+    try {
+      const response = await app.inject({ method: 'POST', url: '/runtime/turn', payload: validPayload });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        reply_text: 'Підкажіть, будь ласка, яка саме послуга цікавить — зорієнтую по вартості.',
+        debug: {
+          reply_source: 'safe_fallback',
+          kb_error: {
+            message: 'Runtime KB retrieval failed; replying with safe fallback where grounding is required.',
+          },
+        },
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+
+  it('keeps booking_result authoritative over KB retrieval', async () => {
+    const repository = new FakeRuntimeTurnRepository({ cases: [makeCase()] });
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'availability_request',
+      requested_action: 'propose_slot',
+      faq_topic: 'price',
+      reply_draft: 'AI draft must not win.',
+      booking: { preferred_date_iso: '2026-05-16', time_of_day: 'any' },
+    }));
+    const bookingApplyService = new FakeBookingApplyService(awaitingConfirmationResponse({ label: '16.05.2026, 09:00' }));
+    const knowledgeRepository = new ThrowingRuntimeKnowledgeRepository(new Error('KB must not be called'));
+    const embeddingClient = new FakeRuntimeEmbeddingClient(makeEmbedding());
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, {
+      runtimeTurnService: new RuntimeTurnService(
+        repository,
+        aiClient,
+        bookingApplyService,
+        undefined,
+        knowledgeRepository,
+        embeddingClient,
+      ),
+    });
+
+    try {
+      const response = await app.inject({ method: 'POST', url: '/runtime/turn', payload: validPayload });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        reply_text: 'Є вільний час 16.05.2026, 09:00. Підтверджуємо?',
+        booking_result: { booking_status: 'awaiting_patient_confirmation' },
+        debug: { reply_source: 'booking_result' },
+      });
+      expect(embeddingClient.calls).toEqual([]);
+    } finally {
+      await app.close();
+    }
+  });
 
   it('saves outbound assistant message on successful AI draft reply with runtime meta', async () => {
     const repository = new FakeRuntimeTurnRepository();
@@ -1012,7 +1204,7 @@ describe('runtime routes', () => {
     }
   });
 
-  it('classifies price FAQ and keeps concise FAQ reply', async () => {
+  it('classifies price FAQ and blocks ungrounded AI price reply', async () => {
     const repository = new FakeRuntimeTurnRepository();
     const aiClient = new FakeRuntimeAIClient(validAIOutput({
       conversation_intent: 'faq',
@@ -1032,10 +1224,10 @@ describe('runtime routes', () => {
 
       expect(response.statusCode).toBe(200);
       expect(response.json()).toMatchObject({
-        reply_text: 'Консультація коштує 500 Kč.',
+        reply_text: 'Підкажіть, будь ласка, яка саме послуга цікавить — зорієнтую по вартості.',
         booking_result: null,
         side_effects: [],
-        debug: { conversation_mode: 'faq_price', reply_source: 'ai_draft' },
+        debug: { conversation_mode: 'faq_price', reply_source: 'safe_fallback' },
       });
     } finally {
       await app.close();
@@ -1109,7 +1301,7 @@ describe('runtime routes', () => {
 
       expect(response.statusCode).toBe(200);
       expect(response.json()).toMatchObject({
-        reply_text: 'Консультація коштує 500 Kč.',
+        reply_text: 'Підкажіть, будь ласка, яка саме послуга цікавить — зорієнтую по вартості.',
         booking_result: null,
         debug: {
           conversation_mode: 'faq_price',
@@ -1180,10 +1372,10 @@ describe('runtime routes', () => {
 
       expect(response.statusCode).toBe(200);
       expect(response.json()).toMatchObject({
-        reply_text: 'Так, чистку також робимо. Можемо зорієнтувати по доступних годинах окремо.',
+        reply_text: 'Ваш запис бачу в контексті. Напишіть, будь ласка, яке саме питання — допоможу або передам адміністратору.',
         booking_result: null,
         side_effects: [],
-        debug: { conversation_mode: 'post_booking_question' },
+        debug: { conversation_mode: 'post_booking_question', reply_source: 'safe_fallback' },
       });
       expect(bookingApplyService.calls).toEqual([]);
     } finally {
@@ -1212,7 +1404,7 @@ describe('runtime routes', () => {
 
       expect(response.statusCode).toBe(200);
       expect(response.json()).toMatchObject({
-        reply_text: 'Так, консультація перед лікуванням доступна.',
+        reply_text: 'Ваш запис бачу в контексті. Напишіть, будь ласка, яке саме питання — допоможу або передам адміністратору.',
         booking_result: null,
         debug: {
           conversation_mode: 'post_booking_question',
@@ -2302,6 +2494,41 @@ class ThrowingBookingApplyService {
 
   async apply(request: BookingApplyRequest): Promise<BookingApplyResponse> {
     this.calls.push(request);
+    throw this.error;
+  }
+}
+
+
+function makeEmbedding(): number[] {
+  return Array.from({ length: 1536 }, (_, index) => index / 1536);
+}
+
+class FakeRuntimeEmbeddingClient implements RuntimeEmbeddingClient {
+  constructor(private readonly embedding: number[]) {}
+
+  readonly calls: Array<{ text: string; trace_id?: string }> = [];
+
+  async embedText(input: { text: string; trace_id?: string }): Promise<number[]> {
+    this.calls.push(input);
+    return this.embedding;
+  }
+}
+
+class FakeRuntimeKnowledgeRepository implements RuntimeKnowledgeRepository {
+  constructor(private readonly result: RuntimeKnowledgeResult) {}
+
+  readonly calls: RuntimeKnowledgeRetrieveInput[] = [];
+
+  async retrieve(input: RuntimeKnowledgeRetrieveInput): Promise<RuntimeKnowledgeResult> {
+    this.calls.push(input);
+    return this.result;
+  }
+}
+
+class ThrowingRuntimeKnowledgeRepository implements RuntimeKnowledgeRepository {
+  constructor(private readonly error: Error) {}
+
+  async retrieve(): Promise<RuntimeKnowledgeResult> {
     throw this.error;
   }
 }

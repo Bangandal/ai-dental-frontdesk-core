@@ -76,3 +76,43 @@
   "traceId": "uuid",
   "durationMinutes": 30
 }
+
+## Runtime KB/RAG contract
+
+`POST /runtime/turn` may ground factual FAQ replies with Supabase pgvector KB context. The production adapter does **not** call a generic single-`jsonb` RPC. It calls the deployed KB RPC with typed parameters:
+
+```sql
+select kb.rpc_retrieve_context_json(
+  $1::uuid,
+  $2::public.vector,
+  $3::integer,
+  $4::real
+) as result
+```
+
+Parameters:
+
+- `$1`: `clinic_id` (`uuid`)
+- `$2`: OpenAI embedding vector formatted for `public.vector`; `kb.kb_chunks.embedding` is `vector(1536)`
+- `$3`: retrieval limit, default `KB_RETRIEVAL_LIMIT=5`
+- `$4`: minimum similarity, default `KB_MIN_SIMILARITY=0.55`
+
+Expected RPC result shape:
+
+```json
+{
+  "hits": [
+    {
+      "title": "...",
+      "content": "...",
+      "metadata": {},
+      "similarity": 0.82
+    }
+  ],
+  "count": 1,
+  "top_similarity": 0.82,
+  "context_text": "..."
+}
+```
+
+Runtime maps `hits[*].similarity` to snippet `score`, reads `source_type` from `metadata.source_type` when present, and treats KB as found only when `count > 0` and at least one snippet is mapped.
