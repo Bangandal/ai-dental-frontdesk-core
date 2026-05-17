@@ -137,7 +137,10 @@ export function decideRuntimeAction(input: RuntimePolicyInput): RuntimePolicyDec
   }
 
   const isAvailabilityRequest = availabilityActions.has(aiOutput.requested_action)
-    || aiOutput.conversation_intent === 'availability_request';
+    || aiOutput.conversation_intent === 'availability_request'
+    || (aiOutput.conversation_intent === 'booking'
+      && aiOutput.availability_query !== null
+      && aiOutput.availability_query.search_type !== 'unknown');
 
   if (isAvailabilityRequest) {
     const availabilityDecision = planRuntimeAvailability({
