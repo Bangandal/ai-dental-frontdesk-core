@@ -8,7 +8,6 @@ import {
   formatRuntimeAIError,
   NoopRuntimeAIClient,
   parseRuntimeAIOutput,
-  RUNTIME_AI_SAFE_FALLBACK_REPLY,
   type RuntimeAIClient,
 } from './runtimeAiClient.js';
 import { buildRuntimePrompt } from './runtimePrompt.js';
@@ -16,6 +15,12 @@ import { getClinicLocalDateIso, normalizeRuntimeAIOutputDates } from './runtimeD
 import { classifyRuntimeConversationMode, type RuntimeConversationMode } from './runtimeConversationMode.js';
 import { decideRuntimeAction, type RuntimePolicyDecision } from './runtimePolicy.js';
 import { buildRuntimeReplyBehavior } from './runtimeReplyBehavior.js';
+import { resolveRuntimeReplyLanguage } from './runtimeReplyLanguage.js';
+import { runtimeReplyTemplate } from './runtimeReplyTemplates.js';
+import {
+  DeterministicRuntimeKnowledgeReplyComposer,
+  type RuntimeKnowledgeReplyComposer,
+} from './runtimeKnowledgeReplyComposer.js';
 import type { RuntimeReplySource } from './runtimeReplyBuilder.js';
 import type { RuntimeEmbeddingClient } from './runtimeEmbeddingClient.js';
 import { NoopRuntimeKnowledgeRepository, type RuntimeKnowledgeRepository, type RuntimeKnowledgeResult } from './runtimeKnowledgeRepository.js';
@@ -257,6 +262,7 @@ export class RuntimeTurnService {
     private readonly clock: () => Date = () => new Date(),
     private readonly knowledgeRepository: RuntimeKnowledgeRepository = new NoopRuntimeKnowledgeRepository(),
     private readonly embeddingClient?: RuntimeEmbeddingClient,
+    private readonly knowledgeReplyComposer: RuntimeKnowledgeReplyComposer = new DeterministicRuntimeKnowledgeReplyComposer(),
   ) {}
 
   async handleTurn(input: RuntimeTurnInput): Promise<RuntimeTurnResult> {
@@ -350,7 +356,9 @@ export class RuntimeTurnService {
     if (this.aiClient.model !== undefined) {
       debug.ai_model = this.aiClient.model;
     }
-    let replyText = RUNTIME_AI_SAFE_FALLBACK_REPLY;
+    const responseLanguage = resolveRuntimeReplyLanguage({ meta: input.meta, clinic });
+    debug.response_language = responseLanguage;
+    let replyText = runtimeReplyTemplate(responseLanguage, 'safe_fallback');
     let replySource: RuntimeReplySource = 'safe_fallback';
     let bookingResult: BookingApplyResponse | null = null;
     let aiOutputForNotification: RuntimeAIOutput | null = null;
@@ -358,6 +366,7 @@ export class RuntimeTurnService {
     let conversationMode: RuntimeConversationMode = 'safe_fallback';
     let replySideEffects: RuntimeSideEffect[] = [];
     let knowledgeResult: RuntimeKnowledgeResult | null = null;
+    let knowledgeReplyText: string | null = null;
 
     try {
       const rawAIOutput = await this.aiClient.extract({
@@ -417,6 +426,8 @@ export class RuntimeTurnService {
             ai_output: aiOutput,
             channel: input.channel,
             knowledge_result: knowledgeResult,
+            knowledge_reply_text: knowledgeReplyText,
+            response_language: responseLanguage,
           });
           replyText = replyDecision.reply_text;
           replySource = replyDecision.reply_source;
@@ -427,14 +438,14 @@ export class RuntimeTurnService {
           debug.booking_error = formatBookingApplyError(error);
           replySource = 'booking_error';
           debug.reply_source = replySource;
-          replyText = 'Не удалось автоматически проверить запись. Администратор проверит вручную и свяжется с вами.';
+          replyText = runtimeReplyTemplate(responseLanguage, 'booking_error');
         }
       } else if (policyDecision.should_call_booking && this.bookingApplyService === undefined) {
         replySource = 'safe_fallback';
         debug.reply_source = replySource;
         debug.booking_request = policyDecision.booking_request;
         debug.booking_error = { code: 'booking_apply_service_unavailable' };
-        replyText = RUNTIME_AI_SAFE_FALLBACK_REPLY;
+        replyText = runtimeReplyTemplate(responseLanguage, 'safe_fallback');
       } else {
         conversationMode = classifyRuntimeConversationMode({
           ai_output: aiOutput,
@@ -447,8 +458,14 @@ export class RuntimeTurnService {
           aiOutput,
           clinicId: clinic.id,
           userText: input.text,
-          language: input.meta?.language_code ?? null,
+          language: responseLanguage,
           conversationMode,
+          traceId,
+          debug,
+        });
+        knowledgeReplyText = await this.composeKnowledgeReply({
+          knowledgeResult,
+          responseLanguage,
           traceId,
           debug,
         });
@@ -462,6 +479,8 @@ export class RuntimeTurnService {
           ai_output: aiOutput,
           channel: input.channel,
           knowledge_result: knowledgeResult,
+          knowledge_reply_text: knowledgeReplyText,
+          response_language: responseLanguage,
         });
         replyText = replyDecision.reply_text;
         replySource = replyDecision.reply_source;
@@ -501,6 +520,8 @@ export class RuntimeTurnService {
         ai_output: null,
         channel: input.channel,
         knowledge_result: knowledgeResult,
+        knowledge_reply_text: knowledgeReplyText,
+        response_language: responseLanguage,
       });
       replyText = replyDecision.reply_text;
       replySource = replyDecision.reply_source;
@@ -557,6 +578,40 @@ export class RuntimeTurnService {
       side_effects: sideEffects,
       debug,
     };
+  }
+
+
+  private async composeKnowledgeReply(input: {
+    knowledgeResult: RuntimeKnowledgeResult | null;
+    responseLanguage: ReturnType<typeof resolveRuntimeReplyLanguage>;
+    traceId: string;
+    debug: Record<string, unknown>;
+  }): Promise<string | null> {
+    if (input.knowledgeResult?.found !== true) {
+      return null;
+    }
+
+    try {
+      const result = await this.knowledgeReplyComposer.compose({
+        knowledge_result: input.knowledgeResult,
+        language: input.responseLanguage,
+        trace_id: input.traceId,
+        debug: input.debug,
+      });
+
+      return typeof result.reply_text === 'string' && result.reply_text.trim() !== '' ? result.reply_text.trim() : null;
+    } catch (error) {
+      input.debug.kb_reply_composer_error = formatRuntimeKnowledgeReplyComposerError(error);
+      const fallbackComposer = new DeterministicRuntimeKnowledgeReplyComposer();
+      const fallback = await fallbackComposer.compose({
+        knowledge_result: input.knowledgeResult,
+        language: input.responseLanguage,
+        trace_id: input.traceId,
+        debug: input.debug,
+      });
+
+      return typeof fallback.reply_text === 'string' && fallback.reply_text.trim() !== '' ? fallback.reply_text.trim() : null;
+    }
   }
 
   private async retrieveKnowledgeForReply(input: RetrieveKnowledgeForReplyInput): Promise<RuntimeKnowledgeResult | null> {
@@ -674,7 +729,7 @@ interface RetrieveKnowledgeForReplyInput {
   aiOutput: RuntimeAIOutput;
   clinicId: string;
   userText: string;
-  language: string | null;
+  language: string;
   conversationMode: RuntimeConversationMode;
   traceId: string;
   debug: Record<string, unknown>;
@@ -691,7 +746,7 @@ function buildRuntimeKnowledgeQueryText(input: {
   faqTopic: RuntimeAIOutput['faq_topic'];
   serviceInterest: string | null;
   userText: string;
-  language: string | null;
+  language: string;
 }): string {
   return [
     `faq_topic: ${input.faqTopic}`,
@@ -718,6 +773,14 @@ function readRuntimeKnowledgeErrorCode(error: unknown): string {
   }
 
   return 'runtime_kb_retrieval_failed';
+}
+
+
+function formatRuntimeKnowledgeReplyComposerError(error: unknown): Record<string, string> {
+  return {
+    code: error instanceof Error && error.name.trim() !== '' ? error.name : 'runtime_kb_reply_composer_failed',
+    message: 'Runtime KB reply composer failed; using deterministic KB fallback.',
+  };
 }
 
 interface CreateAdminNotificationSideEffectInput {

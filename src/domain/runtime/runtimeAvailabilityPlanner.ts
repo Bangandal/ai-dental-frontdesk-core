@@ -1,6 +1,8 @@
 import type { BookingApplyRequest, TimeOfDay } from '../booking/bookingApply.js';
 import type { RuntimeAIOutput, RuntimeTurnInput } from './runtimeContracts.js';
 import type { RuntimeBookingContext, RuntimeCaseContext, RuntimeClinicRecord } from './runtimeTurnService.js';
+import { resolveRuntimeReplyLanguage } from './runtimeReplyLanguage.js';
+import { runtimeReplyTemplate } from './runtimeReplyTemplates.js';
 
 export type RuntimeAvailabilityBookingAction = 'propose_slot' | 'confirm_slot' | 'cancel_hold';
 
@@ -49,6 +51,7 @@ const relativeDayOffsets: Record<NonNullable<NonNullable<RuntimeAIOutput['availa
 
 export function planRuntimeAvailability(input: RuntimeAvailabilityPlannerInput): RuntimeAvailabilityPlannerOutput {
   const serviceInterest = readServiceInterest(input);
+  const language = resolveRuntimeReplyLanguage({ meta: input.meta, clinic: input.clinic });
   const warnings: string[] = [];
   const availabilityQuery = input.ai_output.availability_query;
   const searchType = availabilityQuery?.search_type ?? 'unknown';
@@ -62,7 +65,7 @@ export function planRuntimeAvailability(input: RuntimeAvailabilityPlannerInput):
       booking_request: null,
       reason: 'availability_query_unknown',
       warnings,
-      reply_text: 'Підкажіть, будь ласка, який день або час Вам зручні — перевірю доступні варіанти.',
+      reply_text: runtimeReplyTemplate(language, 'availability_query_unknown'),
     };
   }
 
@@ -76,7 +79,7 @@ export function planRuntimeAvailability(input: RuntimeAvailabilityPlannerInput):
   const timeValidation = validateTimeConstraints(effectiveQuery, effectiveSearchType);
 
   if (!timeValidation.ok) {
-    return askClarification(timeValidation.reason, warnings);
+    return askClarification(timeValidation.reason, warnings, language);
   }
 
   if (serviceInterest === null) {
@@ -86,7 +89,7 @@ export function planRuntimeAvailability(input: RuntimeAvailabilityPlannerInput):
       booking_request: null,
       reason: 'missing_service_for_availability',
       warnings,
-      reply_text: 'Підкажіть, будь ласка, на яку послугу або консультацію хочете записатися?',
+      reply_text: runtimeReplyTemplate(language, 'missing_service_for_availability'),
     };
   }
 
@@ -95,19 +98,27 @@ export function planRuntimeAvailability(input: RuntimeAvailabilityPlannerInput):
   const exactTime = timeValidation.exactTime;
 
   if (effectiveSearchType === 'specific_date' && preferredDateIso === null) {
-    return askClarification('specific_date_missing_date', warnings);
+    return askClarification('specific_date_missing_date', warnings, language);
   }
 
   if (effectiveSearchType === 'weekday' && preferredDateIso === null) {
-    return askClarification('weekday_missing_or_invalid', warnings);
+    return askClarification('availability_query_unknown', warnings, language);
   }
 
   if (effectiveSearchType === 'relative_day' && preferredDateIso === null) {
-    return askClarification('relative_day_missing_or_invalid', warnings);
+    return askClarification('availability_query_unknown', warnings, language);
   }
 
   if (effectiveSearchType === 'exact_slot' && !isValidDateIso(effectiveQuery.date_iso)) {
-    return askClarification('exact_slot_missing_date', warnings);
+    return askClarification('exact_slot_missing_date', warnings, language);
+  }
+
+  if (preferredDateIso !== null && isPastDateIso(preferredDateIso, input.current_clinic_date_iso)) {
+    return askClarification(
+      effectiveSearchType === 'exact_slot' ? 'exact_slot_date_in_past' : 'availability_date_in_past',
+      warnings,
+      language,
+    );
   }
 
   return {
@@ -365,15 +376,36 @@ function buildReason(searchType: AvailabilitySearchType, usedFallback: boolean):
   return `availability_${searchType}`;
 }
 
-function askClarification(reason: string, warnings: string[]): RuntimeAvailabilityPlannerOutput {
+function askClarification(reason: string, warnings: string[], language: ReturnType<typeof resolveRuntimeReplyLanguage>): RuntimeAvailabilityPlannerOutput {
   return {
     should_call_booking: false,
     booking_action: null,
     booking_request: null,
     reason,
     warnings,
-    reply_text: 'Підкажіть, будь ласка, конкретну дату або зручний час — перевірю доступні варіанти.',
+    reply_text: replyTextForPlannerReason(reason, language),
   };
+}
+
+
+function replyTextForPlannerReason(reason: string, language: ReturnType<typeof resolveRuntimeReplyLanguage>): string {
+  if (reason === 'specific_date_missing_date'
+    || reason === 'exact_slot_missing_date'
+    || reason === 'exact_slot_missing_time'
+    || reason === 'exact_slot_invalid_time'
+    || reason === 'time_window_missing_or_invalid'
+    || reason === 'time_window_invalid_range'
+    || reason === 'availability_date_in_past'
+    || reason === 'exact_slot_date_in_past'
+    || reason === 'availability_query_unknown') {
+    return runtimeReplyTemplate(language, reason);
+  }
+
+  return runtimeReplyTemplate(language, 'availability_query_unknown');
+}
+
+function isPastDateIso(value: string, currentDateIso: string): boolean {
+  return isValidDateIso(value) && isValidDateIso(currentDateIso) && value < currentDateIso;
 }
 
 function readServiceInterest(input: RuntimeAvailabilityPlannerInput): string | null {

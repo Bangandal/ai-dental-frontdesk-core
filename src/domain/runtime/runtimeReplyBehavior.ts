@@ -1,7 +1,8 @@
 import type { BookingApplyResponse } from '../booking/bookingApply.js';
-import { RUNTIME_AI_SAFE_FALLBACK_REPLY } from './runtimeAiClient.js';
 import type { RuntimeAIOutput, RuntimeSideEffect, RuntimeTurnInput } from './runtimeContracts.js';
 import type { RuntimeConversationMode } from './runtimeConversationMode.js';
+import type { RuntimeReplyLanguage } from './runtimeReplyLanguage.js';
+import { runtimeReplyTemplate } from './runtimeReplyTemplates.js';
 import type { RuntimePolicyDecision } from './runtimePolicy.js';
 import type { RuntimeKnowledgeResult } from './runtimeKnowledgeRepository.js';
 import { buildReplyFromBookingResult, type RuntimeReplyDecision } from './runtimeReplyBuilder.js';
@@ -17,6 +18,8 @@ export interface RuntimeReplyBehaviorInput {
   ai_output: RuntimeAIOutput | null;
   channel: RuntimeTurnInput['channel'];
   knowledge_result?: RuntimeKnowledgeResult | null;
+  knowledge_reply_text?: string | null;
+  response_language: RuntimeReplyLanguage;
 }
 
 export interface RuntimeReplyBehaviorResult extends RuntimeReplyDecision {
@@ -33,7 +36,7 @@ export function buildRuntimeReplyBehavior(input: RuntimeReplyBehaviorInput): Run
 
   if (input.conversation_mode === 'faq_address') {
     const locationPacket = buildLocationPacket(input.clinic.settings, input.channel);
-    const knowledgeReply = buildKnowledgeReply(input.knowledge_result);
+    const knowledgeReply = buildKnowledgeReply(input.knowledge_reply_text);
 
     if (locationPacket !== null) {
       return {
@@ -52,7 +55,7 @@ export function buildRuntimeReplyBehavior(input: RuntimeReplyBehaviorInput): Run
     }
 
     return {
-      reply_text: 'Підкажіть, будь ласка, з якою філією або адресою допомогти? Я зорієнтую.',
+      reply_text: runtimeReplyTemplate(input.response_language, 'faq_address_missing'),
       reply_source: 'safe_fallback',
       side_effects: [],
     };
@@ -60,7 +63,7 @@ export function buildRuntimeReplyBehavior(input: RuntimeReplyBehaviorInput): Run
 
   if (input.conversation_mode === 'multi_patient_request') {
     return {
-      reply_text: 'Для запису кількох людей краще оформити окремі записи, щоб не переплутати час. Я передам запит адміністратору, і він допоможе погодити деталі.',
+      reply_text: input.response_language === 'uk' ? 'Для запису кількох людей краще оформити окремі записи, щоб не переплутати час. Передам запит адміністратору, і він допоможе погодити деталі.' : 'Для записи нескольких людей лучше оформить отдельные записи, чтобы не перепутать время. Передам запрос администратору, и он поможет согласовать детали.',
       reply_source: 'policy',
       side_effects: [],
     };
@@ -68,7 +71,7 @@ export function buildRuntimeReplyBehavior(input: RuntimeReplyBehaviorInput): Run
 
   if (input.conversation_mode === 'reschedule_request') {
     return {
-      reply_text: 'Зміну або перенесення запису має підтвердити адміністратор. Передам запит, щоб з Вами зв’язались і погодили новий час.',
+      reply_text: input.response_language === 'uk' ? 'Зміну або перенесення запису має підтвердити адміністратор. Передам запит, щоб з вами зв’язались і погодили новий час.' : 'Изменение или перенос записи должен подтвердить администратор. Передам запрос, чтобы с вами связались и согласовали новое время.',
       reply_source: 'policy',
       side_effects: [],
     };
@@ -76,7 +79,7 @@ export function buildRuntimeReplyBehavior(input: RuntimeReplyBehaviorInput): Run
 
   if (input.conversation_mode === 'human_handoff') {
     return {
-      reply_text: input.policy_decision?.reply_text ?? 'Передам Ваш запит адміністратору, щоб він допоміг вручну.',
+      reply_text: input.policy_decision?.reply_text ?? (input.response_language === 'uk' ? 'Передам ваш запит адміністратору, щоб він допоміг вручну.' : 'Передам ваш запрос администратору, чтобы он помог вручную.'),
       reply_source: 'policy',
       side_effects: [],
     };
@@ -90,7 +93,7 @@ export function buildRuntimeReplyBehavior(input: RuntimeReplyBehaviorInput): Run
     };
   }
 
-  const knowledgeReply = buildKnowledgeReply(input.knowledge_result);
+  const knowledgeReply = buildKnowledgeReply(input.knowledge_reply_text);
 
   if (knowledgeReply !== null && requiresKnowledgeGrounding(input)) {
     return {
@@ -112,7 +115,7 @@ export function buildRuntimeReplyBehavior(input: RuntimeReplyBehaviorInput): Run
 
   if (input.conversation_mode === 'faq_price') {
     return {
-      reply_text: 'Підкажіть, будь ласка, яка саме послуга цікавить — зорієнтую по вартості.',
+      reply_text: runtimeReplyTemplate(input.response_language, 'faq_price_missing'),
       reply_source: 'safe_fallback',
       side_effects: [],
     };
@@ -120,7 +123,7 @@ export function buildRuntimeReplyBehavior(input: RuntimeReplyBehaviorInput): Run
 
   if (input.conversation_mode === 'faq_insurance') {
     return {
-      reply_text: 'Підкажіть, будь ласка, яка у Вас страхова або який тип покриття — перевіримо, чи можемо прийняти.',
+      reply_text: runtimeReplyTemplate(input.response_language, 'faq_insurance_missing'),
       reply_source: 'safe_fallback',
       side_effects: [],
     };
@@ -128,14 +131,14 @@ export function buildRuntimeReplyBehavior(input: RuntimeReplyBehaviorInput): Run
 
   if (input.conversation_mode === 'post_booking_question') {
     return {
-      reply_text: 'Ваш запис бачу в контексті. Напишіть, будь ласка, яке саме питання — допоможу або передам адміністратору.',
+      reply_text: runtimeReplyTemplate(input.response_language, 'post_booking_question'),
       reply_source: 'safe_fallback',
       side_effects: [],
     };
   }
 
   return {
-    reply_text: RUNTIME_AI_SAFE_FALLBACK_REPLY,
+    reply_text: runtimeReplyTemplate(input.response_language, 'safe_fallback'),
     reply_source: 'safe_fallback',
     side_effects: [],
   };
@@ -197,20 +200,8 @@ function readStringArray(value: unknown): string[] | undefined {
   return strings.length === value.length ? strings : undefined;
 }
 
-function buildKnowledgeReply(knowledgeResult: RuntimeKnowledgeResult | null | undefined): string | null {
-  if (knowledgeResult?.found !== true) {
-    return null;
-  }
-
-  const contextText = readNonEmpty(knowledgeResult.context_text);
-
-  if (contextText !== undefined) {
-    return contextText;
-  }
-
-  const firstSnippet = knowledgeResult.snippets.find((snippet) => readNonEmpty(snippet.content) !== undefined);
-
-  return firstSnippet === undefined ? null : firstSnippet.content;
+function buildKnowledgeReply(knowledgeReplyText: string | null | undefined): string | null {
+  return readNonEmpty(knowledgeReplyText) ?? null;
 }
 
 function requiresKnowledgeGrounding(input: RuntimeReplyBehaviorInput): boolean {

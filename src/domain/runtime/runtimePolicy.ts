@@ -1,6 +1,8 @@
 import type { BookingApplyRequest, TimeOfDay } from '../booking/bookingApply.js';
 import type { RuntimeAIOutput, RuntimeTurnInput } from './runtimeContracts.js';
 import { planRuntimeAvailability } from './runtimeAvailabilityPlanner.js';
+import { resolveRuntimeReplyLanguage } from './runtimeReplyLanguage.js';
+import { runtimeReplyTemplate } from './runtimeReplyTemplates.js';
 import type { RuntimeBookingContext, RuntimeCaseContext, RuntimeClinicRecord } from './runtimeTurnService.js';
 
 export interface RuntimePolicyInput {
@@ -38,14 +40,19 @@ const pureFaqActions = new Set<RuntimeAIOutput['requested_action']>(['answer_faq
 export function decideRuntimeAction(input: RuntimePolicyInput): RuntimePolicyDecision {
   const aiOutput = input.ai_output;
 
+  const language = resolveRuntimeReplyLanguage({ meta: input.meta, clinic: input.clinic });
+
   if (aiOutput === null) {
-    return noBooking('safe_fallback', 'invalid_or_missing_ai_output');
+    return {
+      ...noBooking('safe_fallback', 'invalid_or_missing_ai_output'),
+      reply_text: runtimeReplyTemplate(language, 'safe_fallback'),
+    };
   }
 
   if (aiOutput.conversation_intent === 'off_topic') {
     return {
       ...noBooking('respond_clinic_scoped', 'off_topic'),
-      reply_text: 'Можу допомогти з питаннями клініки або записом на прийом.',
+      reply_text: runtimeReplyTemplate(language, 'off_topic'),
     };
   }
 
@@ -132,7 +139,7 @@ export function decideRuntimeAction(input: RuntimePolicyInput): RuntimePolicyDec
   if (hasBookingInterest && !hasPreferredDateOrWeekday) {
     return {
       ...noBooking('ask_preferred_datetime', 'booking_interest_missing_datetime'),
-      reply_text: 'Підкажіть, будь ласка, який день і час Вам зручні 🙂',
+      reply_text: runtimeReplyTemplate(language, 'booking_interest_missing_datetime'),
     };
   }
 
