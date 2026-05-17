@@ -62,4 +62,12 @@ describe('buildRuntimePrompt', () => {
     expect(prompt.system_prompt).toContain('“На чистку завтра утром” -> service_interest “чистка”');
   });
 
+  it('guides price questions to extract named service_interest', () => {
+    const prompt = buildRuntimePrompt(basePromptInput);
+
+    expect(prompt.system_prompt).toContain('For price questions, extract the named service phrase into slot_updates.service_interest');
+    expect(prompt.system_prompt).toContain('“Сколько стоит чистка?” -> service_interest “чистка”');
+    expect(prompt.system_prompt).toContain('“сколько стоит консультация?” -> “консультация”');
+  });
+
 });

@@ -458,6 +458,56 @@ describe('runtime routes', () => {
     }
   });
 
+  it('returns price unavailable for pending price FAQ when KB reply has no price signal and clears pending without booking', async () => {
+    const repository = new FakeRuntimeTurnRepository({ state: pendingPriceFaqState() });
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'booking',
+      requested_action: 'ask_slot',
+      slot_updates: { service_interest: 'чистка зубов' },
+      reply_draft: 'Подскажите удобный день и время.',
+    }));
+    const bookingApplyService = new FakeBookingApplyService(awaitingConfirmationResponse());
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, {
+      runtimeTurnService: new RuntimeTurnService(
+        repository,
+        aiClient,
+        bookingApplyService,
+        fixedClock,
+        new FakeRuntimeKnowledgeRepository({
+          found: true,
+          count: 1,
+          top_similarity: 0.9,
+          context_text: 'RU: Гигиена.',
+          snippets: [{ title: 'Cleaning category', content: 'RU: Гигиена.', metadata: { source_type: 'faq' }, score: 0.9, source_type: 'faq' }],
+        }),
+        new FakeRuntimeEmbeddingClient(makeEmbedding()),
+      ),
+    });
+
+    try {
+      const response = await app.inject({ method: 'POST', url: '/runtime/turn', payload: { ...validPayload, text: 'чистка зубов' } });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        reply_text: 'По этой услуге точную стоимость лучше уточнит администратор. Могу передать запрос администратору.',
+        booking_result: null,
+        debug: {
+          conversation_mode: 'faq_price',
+          reply_source: 'safe_fallback',
+          price_answer_quality: { accepted: false, reason: 'no_price_signal' },
+          pending_clarification: { status: 'completed' },
+          runtime_state_saved: { pending_clarification: null, pending_clarification_cleared: true },
+        },
+      });
+      expect(response.json().reply_text).not.toBe('Гигиена.');
+      expect(bookingApplyService.calls).toEqual([]);
+      expect(repository.calls.savedState?.state.runtime.pending_clarification).toBeUndefined();
+    } finally {
+      await app.close();
+    }
+  });
+
   it('keeps pending price clarification and asks service again when no service_interest is extracted', async () => {
     const repository = new FakeRuntimeTurnRepository({ state: pendingPriceFaqState() });
     const aiClient = new FakeRuntimeAIClient(validAIOutput({
@@ -560,8 +610,6 @@ describe('runtime routes', () => {
       await app.close();
     }
   });
-
-
 
   it('uses KB context for grounded FAQ price replies and blocks invented AI prices', async () => {
     const repository = new FakeRuntimeTurnRepository();
@@ -697,8 +745,8 @@ describe('runtime routes', () => {
           found: true,
           count: 1,
           top_similarity: 0.8,
-          context_text: '[1] chunk\nRU: Администратор уточнит стоимость консультации перед записью.',
-          snippets: [{ title: 'Price fallback', content: 'RU: Администратор уточнит стоимость консультации перед записью.', metadata: { source_type: 'faq' }, score: 0.8, source_type: 'faq' }],
+          context_text: '[1] chunk\nRU: В прайсе указано: бесплатная консультация при дальнейшем лечении.',
+          snippets: [{ title: 'Price fallback', content: 'RU: В прайсе указано: бесплатная консультация при дальнейшем лечении.', metadata: { source_type: 'faq' }, score: 0.8, source_type: 'faq' }],
         }),
         new FakeRuntimeEmbeddingClient(makeEmbedding()),
         new ThrowingRuntimeKnowledgeReplyComposer(new Error('composer down')),
@@ -710,7 +758,7 @@ describe('runtime routes', () => {
 
       expect(response.statusCode).toBe(200);
       expect(response.json()).toMatchObject({
-        reply_text: 'Администратор уточнит стоимость консультации перед записью.',
+        reply_text: 'В прайсе указано: бесплатная консультация при дальнейшем лечении.',
         debug: {
           reply_source: 'kb',
           kb_reply_composer_error: { message: 'Runtime KB reply composer failed; using deterministic KB fallback.' },
@@ -719,6 +767,60 @@ describe('runtime routes', () => {
       });
       expect(response.json().reply_text).not.toContain('999');
       expect(response.json().reply_text).not.toContain('[1]');
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('answers direct price question from valid KB even when AI missed service_interest without saving pending', async () => {
+    const repository = new FakeRuntimeTurnRepository();
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'faq',
+      requested_action: 'answer_faq',
+      faq_topic: 'price',
+      reply_draft: 'Какую услугу уточнить?',
+    }));
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, {
+      runtimeTurnService: new RuntimeTurnService(
+        repository,
+        aiClient,
+        undefined,
+        fixedClock,
+        new FakeRuntimeKnowledgeRepository({
+          found: true,
+          count: 1,
+          top_similarity: 0.88,
+          context_text: 'RU: В прайсе указано: бесплатная консультация при дальнейшем лечении.',
+          snippets: [{ title: 'Consultation price', content: 'RU: В прайсе указано: бесплатная консультация при дальнейшем лечении.', metadata: { source_type: 'faq' }, score: 0.88, source_type: 'faq' }],
+        }),
+        new FakeRuntimeEmbeddingClient(makeEmbedding()),
+      ),
+    });
+
+    try {
+      const response = await app.inject({ method: 'POST', url: '/runtime/turn', payload: { ...validPayload, text: 'Сколько стоит консультация?' } });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        reply_text: 'В прайсе указано: бесплатная консультация при дальнейшем лечении.',
+        booking_result: null,
+        debug: {
+          conversation_mode: 'faq_price',
+          reply_source: 'kb',
+          kb_query: {
+            query_text: [
+              'faq_topic: price',
+              'service_interest: unknown',
+              'question: Сколько стоит консультация?',
+              'language: ru',
+            ].join('\n'),
+          },
+          price_answer_quality: { accepted: true, reason: 'explicit_free' },
+        },
+      });
+      expect(response.json().reply_text).not.toBe('Подскажите, пожалуйста, какая именно услуга интересует — сориентирую по стоимости.');
+      expect(repository.calls.savedState).toBeUndefined();
     } finally {
       await app.close();
     }
