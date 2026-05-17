@@ -464,7 +464,7 @@ describe('runtime routes', () => {
 
       expect(response.statusCode).toBe(200);
       expect(response.json()).toMatchObject({
-        reply_text: 'Підкажіть, будь ласка, яка саме послуга цікавить — зорієнтую по вартості.',
+        reply_text: 'Подскажите, пожалуйста, какая именно услуга интересует — сориентирую по стоимости.',
         debug: {
           reply_source: 'safe_fallback',
           kb_result: { found: false, count: 0 },
@@ -500,7 +500,7 @@ describe('runtime routes', () => {
 
       expect(response.statusCode).toBe(200);
       expect(response.json()).toMatchObject({
-        reply_text: 'Підкажіть, будь ласка, яка саме послуга цікавить — зорієнтую по вартості.',
+        reply_text: 'Подскажите, пожалуйста, какая именно услуга интересует — сориентирую по стоимости.',
         debug: {
           reply_source: 'safe_fallback',
           kb_error: {
@@ -757,7 +757,7 @@ describe('runtime routes', () => {
           },
         },
       });
-      expect(response.json().reply_text).toContain('день і час');
+      expect(response.json().reply_text).toContain('день и время');
       expect(bookingApplyService.calls).toEqual([]);
     } finally {
       await app.close();
@@ -1043,7 +1043,7 @@ describe('runtime routes', () => {
       expect(response.statusCode).toBe(200);
       expect(bookingApplyService.calls).toHaveLength(1);
       expect(response.json()).toMatchObject({
-        reply_text: 'Не вдалося автоматично перевірити запис. Адміністратор перевірить вручну і зв’яжеться з вами.',
+        reply_text: 'Не удалось автоматически проверить запись. Администратор проверит вручную и свяжется с вами.',
         booking_result: null,
         side_effects: [],
         debug: {
@@ -1348,7 +1348,7 @@ describe('runtime routes', () => {
 
       expect(response.statusCode).toBe(200);
       expect(response.json()).toMatchObject({
-        reply_text: 'Підкажіть, будь ласка, на яку послугу або консультацію хочете записатися?',
+        reply_text: 'Подскажите, пожалуйста, на какую услугу или консультацию хотите записаться?',
         booking_result: null,
         side_effects: [],
         debug: {
@@ -1578,7 +1578,7 @@ describe('runtime routes', () => {
 
       expect(response.statusCode).toBe(200);
       expect(response.json()).toMatchObject({
-        reply_text: 'Підкажіть, будь ласка, зручний день і час.',
+        reply_text: 'Подскажите, пожалуйста, удобный день и время.',
         booking_result: null,
         side_effects: [],
         debug: {
@@ -1613,7 +1613,7 @@ describe('runtime routes', () => {
 
       expect(response.statusCode).toBe(200);
       expect(response.json()).toMatchObject({
-        reply_text: 'Підкажіть, будь ласка, яка саме послуга цікавить — зорієнтую по вартості.',
+        reply_text: 'Подскажите, пожалуйста, какая именно услуга интересует — сориентирую по стоимости.',
         booking_result: null,
         side_effects: [],
         debug: { conversation_mode: 'faq_price', reply_source: 'safe_fallback' },
@@ -1689,7 +1689,7 @@ describe('runtime routes', () => {
 
       expect(response.statusCode).toBe(200);
       expect(response.json()).toMatchObject({
-        reply_text: 'Підкажіть, будь ласка, щодо якої філії або адреси зорієнтувати?',
+        reply_text: 'Подскажите, пожалуйста, по какому филиалу или адресу сориентировать?',
         side_effects: [],
         debug: { conversation_mode: 'faq_address', reply_source: 'safe_fallback' },
       });
@@ -1868,7 +1868,7 @@ describe('runtime routes', () => {
 
       expect(response.statusCode).toBe(200);
       expect(response.json()).toMatchObject({
-        reply_text: 'Підкажіть, будь ласка, яка саме послуга цікавить — зорієнтую по вартості.',
+        reply_text: 'Подскажите, пожалуйста, какая именно услуга интересует — сориентирую по стоимости.',
         booking_result: null,
         debug: {
           conversation_mode: 'faq_price',
@@ -1939,7 +1939,7 @@ describe('runtime routes', () => {
 
       expect(response.statusCode).toBe(200);
       expect(response.json()).toMatchObject({
-        reply_text: 'Ваш запис бачу в контексті. Напишіть, будь ласка, яке саме питання — допоможу або передам адміністратору.',
+        reply_text: 'Вашу запись вижу в контексте. Напишите, пожалуйста, какой именно вопрос — помогу или передам администратору.',
         booking_result: null,
         side_effects: [],
         debug: { conversation_mode: 'post_booking_question', reply_source: 'safe_fallback' },
@@ -1971,7 +1971,7 @@ describe('runtime routes', () => {
 
       expect(response.statusCode).toBe(200);
       expect(response.json()).toMatchObject({
-        reply_text: 'Ваш запис бачу в контексті. Напишіть, будь ласка, яке саме питання — допоможу або передам адміністратору.',
+        reply_text: 'Вашу запись вижу в контексте. Напишите, пожалуйста, какой именно вопрос — помогу или передам администратору.',
         booking_result: null,
         debug: {
           conversation_mode: 'post_booking_question',
@@ -2010,7 +2010,7 @@ describe('runtime routes', () => {
         debug: { conversation_mode: 'multi_patient_request', reply_source: 'policy' },
         side_effects: [{ payload: { trigger: 'multi_patient_request', reason: 'multi_patient_requires_admin_coordination' } }],
       });
-      expect(response.json().reply_text).toContain('окремі записи');
+      expect(response.json().reply_text).toContain('отдельные записи');
       expect(bookingApplyService.calls).toEqual([]);
       expect(repository.calls.notification).toMatchObject({ recipient: '999-admin-chat' });
     } finally {
@@ -2556,7 +2556,7 @@ describe('runtime routes', () => {
 
       expect(response.statusCode).toBe(200);
       expect(response.json()).toMatchObject({
-        reply_text: 'Не вдалося автоматично перевірити запис. Адміністратор перевірить вручну і зв’яжеться з вами.',
+        reply_text: 'Не удалось автоматически проверить запись. Администратор проверит вручную и свяжется с вами.',
         side_effects: [{ payload: { trigger: 'booking_error', reason: 'booking_apply_failed' } }],
       });
       expect(repository.calls.notification).toBeDefined();

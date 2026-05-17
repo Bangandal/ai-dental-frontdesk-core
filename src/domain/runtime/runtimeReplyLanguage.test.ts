@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 import { resolveRuntimeReplyLanguage } from './runtimeReplyLanguage.js';
+import { runtimeReplyTemplate } from './runtimeReplyTemplates.js';
 import type { RuntimeClinicRecord } from './runtimeTurnService.js';
 
 const clinic: RuntimeClinicRecord = {
@@ -18,7 +19,14 @@ describe('RuntimeReplyLanguage', () => {
     expect(resolveRuntimeReplyLanguage({ meta: { language_code: 'ru' }, clinic: { ...clinic, settings: { default_language: 'uk' } } })).toBe('ru');
     expect(resolveRuntimeReplyLanguage({ meta: { language_code: 'cs-CZ' }, clinic })).toBe('cs');
     expect(resolveRuntimeReplyLanguage({ meta: undefined, clinic: { ...clinic, settings: { default_language: 'en' } } })).toBe('en');
-    expect(resolveRuntimeReplyLanguage({ meta: { language_code: 'unsupported' }, clinic })).toBe('uk');
+    expect(resolveRuntimeReplyLanguage({ meta: { language_code: 'unsupported' }, clinic })).toBe('ru');
+  });
+
+
+  it('has localized handoff templates for cs and en instead of falling through to Russian', () => {
+    expect(runtimeReplyTemplate('cs', 'multi_patient_request')).toContain('samostatné rezervace');
+    expect(runtimeReplyTemplate('cs', 'reschedule_request')).toContain('administrátor');
+    expect(runtimeReplyTemplate('en', 'human_handoff')).toContain('administrator');
   });
 
   it('does not use raw user text or semantic phrase matching for language selection', () => {

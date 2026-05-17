@@ -63,7 +63,7 @@ export function buildRuntimeReplyBehavior(input: RuntimeReplyBehaviorInput): Run
 
   if (input.conversation_mode === 'multi_patient_request') {
     return {
-      reply_text: input.response_language === 'uk' ? 'Для запису кількох людей краще оформити окремі записи, щоб не переплутати час. Передам запит адміністратору, і він допоможе погодити деталі.' : 'Для записи нескольких людей лучше оформить отдельные записи, чтобы не перепутать время. Передам запрос администратору, и он поможет согласовать детали.',
+      reply_text: runtimeReplyTemplate(input.response_language, 'multi_patient_request'),
       reply_source: 'policy',
       side_effects: [],
     };
@@ -71,7 +71,7 @@ export function buildRuntimeReplyBehavior(input: RuntimeReplyBehaviorInput): Run
 
   if (input.conversation_mode === 'reschedule_request') {
     return {
-      reply_text: input.response_language === 'uk' ? 'Зміну або перенесення запису має підтвердити адміністратор. Передам запит, щоб з вами зв’язались і погодили новий час.' : 'Изменение или перенос записи должен подтвердить администратор. Передам запрос, чтобы с вами связались и согласовали новое время.',
+      reply_text: runtimeReplyTemplate(input.response_language, 'reschedule_request'),
       reply_source: 'policy',
       side_effects: [],
     };
@@ -79,7 +79,7 @@ export function buildRuntimeReplyBehavior(input: RuntimeReplyBehaviorInput): Run
 
   if (input.conversation_mode === 'human_handoff') {
     return {
-      reply_text: input.policy_decision?.reply_text ?? (input.response_language === 'uk' ? 'Передам ваш запит адміністратору, щоб він допоміг вручну.' : 'Передам ваш запрос администратору, чтобы он помог вручную.'),
+      reply_text: input.policy_decision?.reply_text ?? runtimeReplyTemplate(input.response_language, 'human_handoff'),
       reply_source: 'policy',
       side_effects: [],
     };

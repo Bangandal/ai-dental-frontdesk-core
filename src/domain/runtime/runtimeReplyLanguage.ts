@@ -4,7 +4,7 @@ import type { RuntimeClinicRecord } from './runtimeTurnService.js';
 export type RuntimeReplyLanguage = 'ru' | 'uk' | 'cs' | 'en';
 
 const supportedLanguages = new Set<RuntimeReplyLanguage>(['ru', 'uk', 'cs', 'en']);
-const fallbackLanguage: RuntimeReplyLanguage = 'uk';
+const fallbackLanguage: RuntimeReplyLanguage = 'ru';
 
 export function resolveRuntimeReplyLanguage(input: {
   meta?: RuntimeTurnInput['meta'];
