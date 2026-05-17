@@ -10,6 +10,7 @@ export type RuntimeReplyTemplateKey =
   | 'time_window_missing_or_invalid'
   | 'time_window_invalid_range'
   | 'availability_date_in_past'
+  | 'date_in_past'
   | 'exact_slot_date_in_past'
   | 'booking_interest_missing_datetime'
   | 'off_topic'
@@ -33,7 +34,8 @@ const templates: Record<RuntimeReplyLanguage, Record<RuntimeReplyTemplateKey, st
     exact_slot_invalid_time: 'Не смогла корректно понять время. Напишите, пожалуйста, в формате 14:00.',
     time_window_missing_or_invalid: 'Не смогла корректно понять время. Напишите, пожалуйста, в формате 14:00.',
     time_window_invalid_range: 'Вижу некорректный интервал времени. Напишите, пожалуйста, удобный промежуток ещё раз.',
-    availability_date_in_past: 'Эта дата уже прошла. Напишите, пожалуйста, будущую дату — проверю свободные варианты.',
+    availability_date_in_past: 'Эта дата уже прошла. Напишите, пожалуйста, будущую дату и время.',
+    date_in_past: 'Эта дата уже прошла. Напишите, пожалуйста, будущую дату и время.',
     exact_slot_date_in_past: 'Эта дата уже прошла. Напишите, пожалуйста, будущую дату и время.',
     booking_interest_missing_datetime: 'Подскажите, пожалуйста, удобный день и время.',
     off_topic: 'Могу помочь с вопросами клиники или записью на приём.',
@@ -56,8 +58,9 @@ const templates: Record<RuntimeReplyLanguage, Record<RuntimeReplyTemplateKey, st
     exact_slot_invalid_time: 'Не змогла коректно зрозуміти час. Напишіть, будь ласка, у форматі 14:00.',
     time_window_missing_or_invalid: 'Не змогла коректно зрозуміти час. Напишіть, будь ласка, у форматі 14:00.',
     time_window_invalid_range: 'Бачу некоректний інтервал часу. Напишіть, будь ласка, зручний проміжок ще раз.',
-    availability_date_in_past: 'Ця дата вже минула. Напишіть, будь ласка, майбутню дату — перевірю доступні варіанти.',
-    exact_slot_date_in_past: 'Ця дата вже минула. Напишіть, будь ласка, майбутню дату й час.',
+    availability_date_in_past: 'Ця дата вже минула. Напишіть, будь ласка, майбутню дату і час.',
+    date_in_past: 'Ця дата вже минула. Напишіть, будь ласка, майбутню дату і час.',
+    exact_slot_date_in_past: 'Ця дата вже минула. Напишіть, будь ласка, майбутню дату і час.',
     booking_interest_missing_datetime: 'Підкажіть, будь ласка, зручний день і час.',
     off_topic: 'Можу допомогти з питаннями клініки або записом на прийом.',
     booking_error: 'Не вдалося автоматично перевірити запис. Адміністратор перевірить вручну і зв’яжеться з вами.',
@@ -79,7 +82,8 @@ const templates: Record<RuntimeReplyLanguage, Record<RuntimeReplyTemplateKey, st
     exact_slot_invalid_time: 'Čas jsem nerozuměla správně. Napište ho prosím ve formátu 14:00.',
     time_window_missing_or_invalid: 'Čas jsem nerozuměla správně. Napište ho prosím ve formátu 14:00.',
     time_window_invalid_range: 'Vidím neplatný časový interval. Napište prosím vhodný interval znovu.',
-    availability_date_in_past: 'Toto datum už proběhlo. Napište prosím budoucí datum — ověřím volné možnosti.',
+    availability_date_in_past: 'Toto datum už proběhlo. Napište prosím budoucí datum a čas.',
+    date_in_past: 'Toto datum už proběhlo. Napište prosím budoucí datum a čas.',
     exact_slot_date_in_past: 'Toto datum už proběhlo. Napište prosím budoucí datum a čas.',
     booking_interest_missing_datetime: 'Napište prosím vhodný den a čas.',
     off_topic: 'Mohu pomoci s dotazy ke klinice nebo objednáním.',
@@ -102,7 +106,8 @@ const templates: Record<RuntimeReplyLanguage, Record<RuntimeReplyTemplateKey, st
     exact_slot_invalid_time: 'I could not read the time correctly. Please write it in 14:00 format.',
     time_window_missing_or_invalid: 'I could not read the time correctly. Please write it in 14:00 format.',
     time_window_invalid_range: 'The time range looks invalid. Please send the preferred range again.',
-    availability_date_in_past: 'That date has already passed. Please send a future date — I will check available options.',
+    availability_date_in_past: 'That date has already passed. Please send a future date and time.',
+    date_in_past: 'That date has already passed. Please send a future date and time.',
     exact_slot_date_in_past: 'That date has already passed. Please send a future date and time.',
     booking_interest_missing_datetime: 'Please send a convenient day and time.',
     off_topic: 'I can help with clinic questions or booking an appointment.',

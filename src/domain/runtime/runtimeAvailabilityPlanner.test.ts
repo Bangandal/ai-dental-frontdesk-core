@@ -227,7 +227,26 @@ describe('RuntimeAvailabilityPlanner', () => {
     expect(result).toMatchObject({
       should_call_booking: false,
       booking_request: null,
-      reason: 'availability_date_in_past',
+      reason: 'date_in_past',
+    });
+  });
+
+  it('blocks typed past date before requiring service interest', () => {
+    const result = planRuntimeAvailability({
+      ...basePlannerInput({
+        current_clinic_date_iso: '2026-05-17',
+        case_context: { ...caseContext, current_case: null, current_case_id: null },
+      }),
+      ai_output: validAIOutput({
+        availability_query: availabilityQuery({ search_type: 'specific_date', date_iso: '2026-05-16' }),
+        slot_updates: { service_interest: null },
+      }),
+    });
+
+    expect(result).toMatchObject({
+      should_call_booking: false,
+      booking_request: null,
+      reason: 'date_in_past',
     });
   });
 

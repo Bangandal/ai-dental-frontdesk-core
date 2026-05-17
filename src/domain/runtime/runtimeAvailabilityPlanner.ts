@@ -57,6 +57,14 @@ export function planRuntimeAvailability(input: RuntimeAvailabilityPlannerInput):
   const searchType = availabilityQuery?.search_type ?? 'unknown';
   const usingFallback = availabilityQuery === null || searchType === 'unknown';
   const fallback = buildFallbackAvailabilityQuery(input.ai_output);
+  const typedPastDateReason = availabilityQuery === null
+    ? null
+    : resolvePastDateReason(availabilityQuery, input.current_clinic_date_iso);
+
+  if (typedPastDateReason !== null) {
+    return askClarification(typedPastDateReason, warnings, language);
+  }
+
   const effectiveQuery = usingFallback ? fallback : availabilityQuery;
   if (effectiveQuery === null || effectiveQuery.search_type === 'unknown') {
     return {
@@ -115,7 +123,7 @@ export function planRuntimeAvailability(input: RuntimeAvailabilityPlannerInput):
 
   if (preferredDateIso !== null && isPastDateIso(preferredDateIso, input.current_clinic_date_iso)) {
     return askClarification(
-      effectiveSearchType === 'exact_slot' ? 'exact_slot_date_in_past' : 'availability_date_in_past',
+      effectiveSearchType === 'exact_slot' ? 'exact_slot_date_in_past' : 'date_in_past',
       warnings,
       language,
     );
@@ -406,12 +414,21 @@ function replyTextForPlannerReason(reason: string, language: ReturnType<typeof r
     || reason === 'time_window_missing_or_invalid'
     || reason === 'time_window_invalid_range'
     || reason === 'availability_date_in_past'
+    || reason === 'date_in_past'
     || reason === 'exact_slot_date_in_past'
     || reason === 'availability_query_unknown') {
     return runtimeReplyTemplate(language, reason);
   }
 
   return runtimeReplyTemplate(language, 'availability_query_unknown');
+}
+
+function resolvePastDateReason(query: AvailabilityQuery, currentDateIso: string): 'exact_slot_date_in_past' | 'date_in_past' | null {
+  if (query.date_iso === null || !isPastDateIso(query.date_iso, currentDateIso)) {
+    return null;
+  }
+
+  return query.search_type === 'exact_slot' ? 'exact_slot_date_in_past' : 'date_in_past';
 }
 
 function isPastDateIso(value: string, currentDateIso: string): boolean {

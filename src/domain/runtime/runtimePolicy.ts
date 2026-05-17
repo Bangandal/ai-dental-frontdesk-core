@@ -49,6 +49,42 @@ export function decideRuntimeAction(input: RuntimePolicyInput): RuntimePolicyDec
     };
   }
 
+  const currentClinicDateIso = input.current_clinic_date_iso ?? readDatePart(input.current_time_iso) ?? new Date().toISOString().slice(0, 10);
+  const activeHold = input.booking_context.active_hold;
+  const booking = aiOutput.booking;
+  const isActiveHoldRejection = activeHold !== null
+    && (aiOutput.requested_action === 'reject_slot' || booking.patient_rejected_proposed_slot);
+  const isActiveHoldConfirmation = activeHold !== null
+    && (
+      aiOutput.requested_action === 'confirm_slot'
+      || aiOutput.conversation_intent === 'patient_confirmation'
+      || booking.patient_confirmed_proposed_slot
+    );
+
+  if (!isActiveHoldRejection && !isActiveHoldConfirmation && hasPastDatedAvailabilityQuery(aiOutput, currentClinicDateIso)) {
+    const availabilityDecision = planRuntimeAvailability({
+      ai_output: aiOutput,
+      case_context: input.case_context,
+      booking_context: input.booking_context,
+      clinic: input.clinic,
+      contact_id: input.contact_id,
+      channel: input.channel,
+      meta: input.meta,
+      trace_id: input.trace_id,
+      current_time_iso: input.current_time_iso,
+      current_clinic_date_iso: currentClinicDateIso,
+    });
+
+    return {
+      next_action: 'ask_preferred_datetime',
+      should_call_booking: false,
+      booking_request: null,
+      reason: availabilityDecision.reason,
+      warnings: availabilityDecision.warnings,
+      reply_text: availabilityDecision.reply_text,
+    };
+  }
+
   if (aiOutput.conversation_intent === 'off_topic') {
     return {
       ...noBooking('respond_clinic_scoped', 'off_topic'),
@@ -56,13 +92,7 @@ export function decideRuntimeAction(input: RuntimePolicyInput): RuntimePolicyDec
     };
   }
 
-  const activeHold = input.booking_context.active_hold;
-  const booking = aiOutput.booking;
-
-  if (
-    activeHold !== null
-    && (aiOutput.requested_action === 'reject_slot' || booking.patient_rejected_proposed_slot)
-  ) {
+  if (isActiveHoldRejection) {
     const activeHoldId = readNonEmpty(booking.selected_hold_id) ?? activeHold.hold_id ?? activeHold.dedupe_key;
 
     return callBooking('cancel_hold', 'active_hold_patient_rejection', {
@@ -84,14 +114,7 @@ export function decideRuntimeAction(input: RuntimePolicyInput): RuntimePolicyDec
     });
   }
 
-  if (
-    activeHold !== null
-    && (
-      aiOutput.requested_action === 'confirm_slot'
-      || aiOutput.conversation_intent === 'patient_confirmation'
-      || booking.patient_confirmed_proposed_slot
-    )
-  ) {
+  if (isActiveHoldConfirmation) {
     const activeHoldId = readNonEmpty(booking.selected_hold_id) ?? activeHold.hold_id ?? activeHold.dedupe_key;
 
     return callBooking('confirm_slot', 'active_hold_confirmed', {
@@ -127,7 +150,7 @@ export function decideRuntimeAction(input: RuntimePolicyInput): RuntimePolicyDec
       meta: input.meta,
       trace_id: input.trace_id,
       current_time_iso: input.current_time_iso,
-      current_clinic_date_iso: input.current_clinic_date_iso ?? readDatePart(input.current_time_iso) ?? new Date().toISOString().slice(0, 10),
+      current_clinic_date_iso: currentClinicDateIso,
     });
     return {
       next_action: availabilityDecision.booking_action ?? (availabilityDecision.should_call_booking ? 'propose_options' : 'ask_preferred_datetime'),
@@ -158,6 +181,52 @@ export function decideRuntimeAction(input: RuntimePolicyInput): RuntimePolicyDec
   }
 
   return noBooking('reply_from_ai', 'no_booking_policy_match');
+}
+
+function hasPastDatedAvailabilityQuery(aiOutput: RuntimeAIOutput, currentDateIso: string): boolean {
+  const query = aiOutput.availability_query;
+
+  return query?.date_iso !== null
+    && query?.date_iso !== undefined
+    && isValidDateIso(query.date_iso)
+    && isValidDateIso(currentDateIso)
+    && query.date_iso < currentDateIso;
+}
+
+function isValidDateIso(value: string): boolean {
+  if (value.length !== 10 || value[4] !== '-' || value[7] !== '-') {
+    return false;
+  }
+
+  if (!isDigitRun(value, 0, 4) || !isDigitRun(value, 5, 7) || !isDigitRun(value, 8, 10)) {
+    return false;
+  }
+
+  const year = Number(value.slice(0, 4));
+  const month = Number(value.slice(5, 7));
+  const day = Number(value.slice(8, 10));
+
+  if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) {
+    return false;
+  }
+
+  const parsed = new Date(Date.UTC(year, month - 1, day));
+
+  return parsed.getUTCFullYear() === year
+    && parsed.getUTCMonth() === month - 1
+    && parsed.getUTCDate() === day;
+}
+
+function isDigitRun(value: string, start: number, end: number): boolean {
+  for (let index = start; index < end; index += 1) {
+    const code = value.charCodeAt(index);
+
+    if (code < 48 || code > 57) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 function callBooking(
