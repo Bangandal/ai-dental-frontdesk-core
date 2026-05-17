@@ -15,7 +15,7 @@ export interface RuntimeAIClient {
   extract(input: RuntimeAIExtractionInput): Promise<RuntimeAIOutput>;
 }
 
-export const RUNTIME_AI_SAFE_FALLBACK_REPLY = 'Підкажіть, будь ласка, чим можемо допомогти — записом чи питанням по клініці?';
+export const RUNTIME_AI_SAFE_FALLBACK_REPLY = 'Подскажите, пожалуйста, чем можем помочь — записью или вопросом по клинике?';
 
 export class NoopRuntimeAIClient implements RuntimeAIClient {
   async extract(): Promise<RuntimeAIOutput> {
