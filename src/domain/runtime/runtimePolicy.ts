@@ -61,28 +61,6 @@ export function decideRuntimeAction(input: RuntimePolicyInput): RuntimePolicyDec
 
   if (
     activeHold !== null
-    && (aiOutput.requested_action === 'confirm_slot' || booking.patient_confirmed_proposed_slot)
-  ) {
-    const activeHoldId = readNonEmpty(booking.selected_hold_id) ?? activeHold.hold_id ?? activeHold.dedupe_key;
-
-    return callBooking('confirm_slot', 'active_hold_patient_confirmation', {
-      clinicId: input.clinic.id,
-      contactId: input.contact_id,
-      caseId: activeHold.case_id ?? input.case_context.current_case_id,
-      bookingAction: 'confirm_slot',
-      serviceInterest: activeHold.service_interest ?? activeHold.service ?? readServiceInterest(input),
-      activeHoldId,
-      patientName: readPatientName(input.meta),
-      channel: input.channel,
-      traceId: input.trace_id,
-      timeOfDay: normalizeTimeOfDay(booking.time_of_day),
-      durationMinutes: 30,
-      metadata: buildPolicyMetadata(input, 'confirm_slot'),
-    });
-  }
-
-  if (
-    activeHold !== null
     && (aiOutput.requested_action === 'reject_slot' || booking.patient_rejected_proposed_slot)
   ) {
     const activeHoldId = readNonEmpty(booking.selected_hold_id) ?? activeHold.hold_id ?? activeHold.dedupe_key;
@@ -94,12 +72,44 @@ export function decideRuntimeAction(input: RuntimePolicyInput): RuntimePolicyDec
       bookingAction: 'cancel_hold',
       serviceInterest: activeHold.service_interest ?? activeHold.service ?? readServiceInterest(input),
       activeHoldId,
+      selectedSlotStartAt: activeHold.start_at,
+      selectedSlotEndAt: activeHold.end_at,
+      selectedSlotProviderMetadata: activeHold.provider_metadata,
       patientName: readPatientName(input.meta),
       channel: input.channel,
       traceId: input.trace_id,
       timeOfDay: normalizeTimeOfDay(booking.time_of_day),
       durationMinutes: 30,
       metadata: buildPolicyMetadata(input, 'cancel_hold'),
+    });
+  }
+
+  if (
+    activeHold !== null
+    && (
+      aiOutput.requested_action === 'confirm_slot'
+      || aiOutput.conversation_intent === 'patient_confirmation'
+      || booking.patient_confirmed_proposed_slot
+    )
+  ) {
+    const activeHoldId = readNonEmpty(booking.selected_hold_id) ?? activeHold.hold_id ?? activeHold.dedupe_key;
+
+    return callBooking('confirm_slot', 'active_hold_confirmed', {
+      clinicId: input.clinic.id,
+      contactId: input.contact_id,
+      caseId: activeHold.case_id ?? input.case_context.current_case_id,
+      bookingAction: 'confirm_slot',
+      serviceInterest: activeHold.service_interest ?? activeHold.service ?? readServiceInterest(input),
+      activeHoldId,
+      selectedSlotStartAt: activeHold.start_at,
+      selectedSlotEndAt: activeHold.end_at,
+      selectedSlotProviderMetadata: activeHold.provider_metadata,
+      patientName: readPatientName(input.meta),
+      channel: input.channel,
+      traceId: input.trace_id,
+      timeOfDay: normalizeTimeOfDay(booking.time_of_day),
+      durationMinutes: 30,
+      metadata: buildPolicyMetadata(input, 'confirm_slot'),
     });
   }
 

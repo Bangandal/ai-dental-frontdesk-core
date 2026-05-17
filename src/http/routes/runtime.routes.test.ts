@@ -3070,6 +3070,180 @@ describe('runtime routes', () => {
     }
   });
 
+
+  it('confirms an active hold even after proposed option memory was consumed', async () => {
+    const activeHold = makeAppointment({
+      dedupeKey: 'hold-key-1',
+      startAt: '2026-05-23T07:15:00.000Z',
+      endAt: '2026-05-23T07:45:00.000Z',
+      cellRange: 'AN13',
+      meta: {
+        slot: {
+          startAt: '2026-05-23T07:15:00.000Z',
+          endAt: '2026-05-23T07:45:00.000Z',
+          timezone: 'Europe/Prague',
+          provider: 'google_sheets',
+          metadata: { timezone: 'Europe/Prague', cell_range: 'AN13', sheet_name: 'Графік' },
+        },
+      },
+    });
+    const repository = new FakeRuntimeTurnRepository({
+      state: { runtime: { awaiting_slot_choice: false, last_proposed_slots: [] } },
+      activeHold,
+      latestAppointment: activeHold,
+      adminRecipient: '999-admin-chat',
+    });
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'patient_confirmation',
+      requested_action: 'confirm_slot',
+      booking: { patient_confirmed_proposed_slot: true },
+    }));
+    const bookingApplyService = new FakeBookingApplyService(confirmedResponse());
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, { runtimeTurnService: new RuntimeTurnService(repository, aiClient, bookingApplyService) });
+
+    try {
+      const response = await app.inject({ method: 'POST', url: '/runtime/turn', payload: { ...validPayload, text: 'Да, подтверждаю' } });
+
+      expect(response.statusCode).toBe(200);
+      expect(bookingApplyService.calls).toHaveLength(1);
+      expect(bookingApplyService.calls[0]).toMatchObject({
+        bookingAction: 'confirm_slot',
+        activeHoldId: 'hold-key-1',
+        selectedSlotStartAt: '2026-05-23T07:15:00.000Z',
+        selectedSlotEndAt: '2026-05-23T07:45:00.000Z',
+        selectedSlotProviderMetadata: { cell_range: 'AN13' },
+      });
+      expect(response.json()).toMatchObject({
+        booking_result: { booking_action: 'confirm_slot', booking_status: 'booked_pending_admin_confirmation' },
+        side_effects: [{ type: 'admin_notification', payload: { trigger: 'booking_result_booked_pending_admin_confirmation' } }],
+        debug: { policy_decision: { next_action: 'confirm_slot', reason: 'active_hold_confirmed' } },
+      });
+      expect(response.json().debug.slot_choice_resolution).toBeUndefined();
+      expect(repository.calls.savedState).toBeUndefined();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('directly confirms when active hold exists and stored proposed slots are empty', async () => {
+    const activeHold = makeAppointment({ dedupeKey: 'hold-key-1' });
+    const repository = new FakeRuntimeTurnRepository({ state: { runtime: { last_proposed_slots: [] } }, activeHold, latestAppointment: activeHold });
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'patient_confirmation',
+      requested_action: 'confirm_slot',
+      booking: { patient_confirmed_proposed_slot: false },
+    }));
+    const bookingApplyService = new FakeBookingApplyService(confirmedResponse());
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, { runtimeTurnService: new RuntimeTurnService(repository, aiClient, bookingApplyService) });
+
+    try {
+      const response = await app.inject({ method: 'POST', url: '/runtime/turn', payload: validPayload });
+
+      expect(response.statusCode).toBe(200);
+      expect(bookingApplyService.calls[0]).toMatchObject({ bookingAction: 'confirm_slot', activeHoldId: 'hold-key-1' });
+      expect(response.json().debug.policy_decision).toMatchObject({ next_action: 'confirm_slot', reason: 'active_hold_confirmed' });
+      expect(response.json().debug.slot_choice_resolution).toBeUndefined();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('confirms active hold when AI sets patient_confirmed_proposed_slot true', async () => {
+    const activeHold = makeAppointment({ dedupeKey: 'hold-key-1' });
+    const repository = new FakeRuntimeTurnRepository({ activeHold, latestAppointment: activeHold });
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'unknown',
+      requested_action: 'clarify',
+      booking: { patient_confirmed_proposed_slot: true },
+    }));
+    const bookingApplyService = new FakeBookingApplyService(confirmedResponse());
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, { runtimeTurnService: new RuntimeTurnService(repository, aiClient, bookingApplyService) });
+
+    try {
+      const response = await app.inject({ method: 'POST', url: '/runtime/turn', payload: validPayload });
+
+      expect(response.statusCode).toBe(200);
+      expect(bookingApplyService.calls[0]).toMatchObject({ bookingAction: 'confirm_slot', activeHoldId: 'hold-key-1' });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('lets active hold confirm_slot beat stale slot-selection resolver data', async () => {
+    const activeHold = makeAppointment({ dedupeKey: 'hold-key-1' });
+    const repository = new FakeRuntimeTurnRepository({ state: { runtime: { last_proposed_slots: [] } }, activeHold, latestAppointment: activeHold });
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'slot_selection',
+      requested_action: 'confirm_slot',
+      slot_selection: { selected_start_at: '2026-05-20T10:30:00.000Z', selection_confidence: 'high' },
+      booking: { patient_confirmed_proposed_slot: false },
+    }));
+    const bookingApplyService = new FakeBookingApplyService(confirmedResponse());
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, { runtimeTurnService: new RuntimeTurnService(repository, aiClient, bookingApplyService) });
+
+    try {
+      const response = await app.inject({ method: 'POST', url: '/runtime/turn', payload: validPayload });
+
+      expect(response.statusCode).toBe(200);
+      expect(bookingApplyService.calls[0]).toMatchObject({
+        bookingAction: 'confirm_slot',
+        selectedSlotStartAt: '2026-05-18T07:00:00.000Z',
+      });
+      expect(response.json().debug.slot_choice_resolution).toBeUndefined();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('keeps existing fallback when confirm_slot has no active hold', async () => {
+    const repository = new FakeRuntimeTurnRepository({ state: { runtime: { awaiting_slot_choice: false, last_proposed_slots: [] } } });
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'patient_confirmation',
+      requested_action: 'confirm_slot',
+      slot_selection: { selected_option_id: '2', selection_confidence: 'high' },
+    }));
+    const bookingApplyService = new FakeBookingApplyService(confirmedResponse());
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, { runtimeTurnService: new RuntimeTurnService(repository, aiClient, bookingApplyService) });
+
+    try {
+      const response = await app.inject({ method: 'POST', url: '/runtime/turn', payload: validPayload });
+
+      expect(response.statusCode).toBe(200);
+      expect(bookingApplyService.calls).toHaveLength(0);
+      expect(response.json().debug.policy_decision).toMatchObject({ next_action: 'clarify_slot_choice', reason: 'slot_selection_no_stored_options' });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('does not confirm active hold when AI says the patient rejected it', async () => {
+    const activeHold = makeAppointment({ dedupeKey: 'hold-key-1' });
+    const repository = new FakeRuntimeTurnRepository({ activeHold, latestAppointment: activeHold });
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'slot_rejected',
+      requested_action: 'reject_slot',
+      booking: { patient_confirmed_proposed_slot: true, patient_rejected_proposed_slot: true },
+    }));
+    const bookingApplyService = new FakeBookingApplyService(cancelNotImplementedResponse());
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, { runtimeTurnService: new RuntimeTurnService(repository, aiClient, bookingApplyService) });
+
+    try {
+      const response = await app.inject({ method: 'POST', url: '/runtime/turn', payload: validPayload });
+
+      expect(response.statusCode).toBe(200);
+      expect(bookingApplyService.calls[0]).toMatchObject({ bookingAction: 'cancel_hold', activeHoldId: 'hold-key-1' });
+      expect(bookingApplyService.calls[0]?.bookingAction).not.toBe('confirm_slot');
+    } finally {
+      await app.close();
+    }
+  });
+
   it('patient typed selection by unique selected_time re-checks that stored option', async () => {
     const repository = new FakeRuntimeTurnRepository({ state: proposedSlotsState() });
     const aiClient = new FakeRuntimeAIClient(validAIOutput({
