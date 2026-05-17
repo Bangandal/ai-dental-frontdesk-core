@@ -11,6 +11,11 @@ import type {
 export type BookingAction = 'none' | 'propose_slot' | 'confirm_slot' | 'cancel_hold';
 export type TimeOfDay = 'morning' | 'afternoon' | 'evening' | 'any';
 
+export interface PreferredTimeWindow {
+  startTime: string | null;
+  endTime: string | null;
+}
+
 export interface BookingApplyRequest {
   clinicId: string;
   contactId: string;
@@ -20,6 +25,8 @@ export interface BookingApplyRequest {
   preferredDateIso?: string | null;
   preferredWeekday?: string | null;
   timeOfDay: TimeOfDay;
+  preferredTimeWindow?: PreferredTimeWindow;
+  exactTime?: string | null;
   activeHoldId?: string | null;
   patientName?: string | null;
   channel?: string | null;
@@ -149,7 +156,10 @@ export class BookingApplyService {
       return noSlotsResponse();
     }
 
-    const candidateSlots = availability.data.slots.filter((slot) => isSlotInRequestedTimeOfDay(slot, request.timeOfDay));
+    const candidateSlots = availability.data.slots.filter((slot) => (
+      isSlotInRequestedTimeOfDay(slot, request.timeOfDay)
+      && isSlotInRequestedTimeConstraints(slot, request)
+    ));
     const selectedSlot = candidateSlots[0];
 
     if (selectedSlot === undefined) {
@@ -312,15 +322,79 @@ function isSlotInRequestedTimeOfDay(slot: ScheduleSlot, timeOfDay: TimeOfDay): b
   return hour >= 17 && hour < 22;
 }
 
+function isSlotInRequestedTimeConstraints(slot: ScheduleSlot, request: BookingApplyRequest): boolean {
+  const slotMinutes = getSlotLocalMinutes(slot);
+  const exactMinutes = parseTimeToMinutes(request.exactTime ?? null);
+
+  if (exactMinutes !== null) {
+    return slotMinutes === exactMinutes;
+  }
+
+  const window = request.preferredTimeWindow;
+
+  if (window === undefined) {
+    return true;
+  }
+
+  const startMinutes = parseTimeToMinutes(window.startTime);
+  const endMinutes = parseTimeToMinutes(window.endTime);
+
+  if (startMinutes !== null && slotMinutes < startMinutes) {
+    return false;
+  }
+
+  if (endMinutes !== null) {
+    if (startMinutes === null) {
+      return slotMinutes < endMinutes;
+    }
+
+    return slotMinutes <= endMinutes;
+  }
+
+  return true;
+}
+
 function getSlotLocalHour(slot: ScheduleSlot): number {
+  return Math.floor(getSlotLocalMinutes(slot) / 60);
+}
+
+function getSlotLocalMinutes(slot: ScheduleSlot): number {
   const parts = new Intl.DateTimeFormat('en-US', {
     timeZone: slot.timezone,
     hour: '2-digit',
+    minute: '2-digit',
     hourCycle: 'h23',
   }).formatToParts(new Date(slot.startAt));
   const hour = parts.find((part) => part.type === 'hour')?.value;
+  const minute = parts.find((part) => part.type === 'minute')?.value;
 
-  return hour === undefined ? new Date(slot.startAt).getUTCHours() : Number(hour);
+  if (hour === undefined || minute === undefined) {
+    const fallback = new Date(slot.startAt);
+    return fallback.getUTCHours() * 60 + fallback.getUTCMinutes();
+  }
+
+  return Number(hour) * 60 + Number(minute);
+}
+
+function parseTimeToMinutes(value: string | null | undefined): number | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  const match = /^(\d{1,2}):(\d{2})$/u.exec(value);
+
+  if (match === null) {
+    return null;
+  }
+
+  const hour = Number.parseInt(match[1] ?? '', 10);
+  const minute = Number.parseInt(match[2] ?? '', 10);
+
+  if (!Number.isInteger(hour) || !Number.isInteger(minute) || hour < 0 || hour > 23 || minute < 0 || minute > 59) {
+    return null;
+  }
+
+  return hour * 60 + minute;
 }
 
 function toBookingSlotPayload(slot: ScheduleSlot, serviceInterest: string | null): BookingSlotPayload {

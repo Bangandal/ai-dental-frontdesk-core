@@ -1096,7 +1096,33 @@ describe('runtime routes', () => {
       expect(response.statusCode).toBe(200);
       expect(bookingApplyService.calls[0]).toMatchObject({
         timeOfDay: 'morning',
+        preferredTimeWindow: { startTime: null, endTime: '10:00' },
         metadata: { time_window: timeWindow },
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('passes exact_slot exactTime as an enforceable booking field', async () => {
+    const repository = new FakeRuntimeTurnRepository({ cases: [makeCase({ collected: { service_interest: 'консультация' } })] });
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'availability_request',
+      requested_action: 'check_availability',
+      availability_query: availabilityQuery({ search_type: 'exact_slot', date_iso: '2026-05-12', exact_time: '14:00' }),
+    }));
+    const bookingApplyService = new FakeBookingApplyService(awaitingConfirmationResponse());
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, { runtimeTurnService: new RuntimeTurnService(repository, aiClient, bookingApplyService) });
+
+    try {
+      const response = await app.inject({ method: 'POST', url: '/runtime/turn', payload: { ...validPayload, text: '12.05 на 14:00' } });
+
+      expect(response.statusCode).toBe(200);
+      expect(bookingApplyService.calls[0]).toMatchObject({
+        preferredDateIso: '2026-05-12',
+        exactTime: '14:00',
+        metadata: { exact_time: '14:00' },
       });
     } finally {
       await app.close();

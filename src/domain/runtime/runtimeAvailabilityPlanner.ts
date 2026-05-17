@@ -85,6 +85,8 @@ export function planRuntimeAvailability(input: RuntimeAvailabilityPlannerInput):
 
   const preferredDateIso = resolvePreferredDateIso(effectiveQuery, input.current_clinic_date_iso, warnings);
   const timeOfDay = resolveTimeOfDay(effectiveQuery, input.ai_output.booking.time_of_day);
+  const preferredTimeWindow = resolvePreferredTimeWindow(effectiveQuery);
+  const exactTime = effectiveQuery.exact_time;
 
   if (effectiveSearchType === 'specific_date' && preferredDateIso === null) {
     return askClarification('specific_date_missing_date', warnings);
@@ -114,6 +116,8 @@ export function planRuntimeAvailability(input: RuntimeAvailabilityPlannerInput):
       preferredDateIso,
       preferredWeekday: effectiveQuery.weekday,
       timeOfDay,
+      preferredTimeWindow: preferredTimeWindow ?? undefined,
+      exactTime,
       activeHoldId: null,
       patientName: readPatientName(input.meta),
       channel: input.channel,
@@ -208,6 +212,29 @@ function resolveNearestWeekday(currentDateIso: string, weekday: Weekday): string
   const offset = (targetWeekday - currentWeekday + 7) % 7;
 
   return addDays(currentDateIso, offset);
+}
+
+
+function resolvePreferredTimeWindow(query: AvailabilityQuery): { startTime: string | null; endTime: string | null } | null {
+  const window = query.time_window;
+
+  if (window === null) {
+    return null;
+  }
+
+  if (window.type === 'before') {
+    return { startTime: null, endTime: window.end_time };
+  }
+
+  if (window.type === 'after') {
+    return { startTime: window.start_time, endTime: null };
+  }
+
+  if (window.type === 'between') {
+    return { startTime: window.start_time, endTime: window.end_time };
+  }
+
+  return null;
 }
 
 function resolveTimeOfDay(

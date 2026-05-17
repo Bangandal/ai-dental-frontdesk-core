@@ -6,6 +6,8 @@ import { PgAppointmentRepository } from '../../domain/appointments/appointmentRe
 import { BookingApplyService } from '../../domain/booking/bookingApply.js';
 import type { BookingApplyRequest } from '../../domain/booking/bookingApply.js';
 
+const timeSchema = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/);
+
 const bookingApplySchema = z.object({
   clinicId: z.string().uuid(),
   contactId: z.string().uuid(),
@@ -15,6 +17,11 @@ const bookingApplySchema = z.object({
   preferredDateIso: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
   preferredWeekday: z.string().min(1).nullable().optional(),
   timeOfDay: z.enum(['morning', 'afternoon', 'evening', 'any']).default('any'),
+  preferredTimeWindow: z.object({
+    startTime: timeSchema.nullable(),
+    endTime: timeSchema.nullable(),
+  }).optional(),
+  exactTime: timeSchema.nullable().optional(),
   activeHoldId: z.string().min(1).nullable().optional(),
   patientName: z.string().min(1).nullable().optional(),
   channel: z.string().min(1).nullable().optional(),

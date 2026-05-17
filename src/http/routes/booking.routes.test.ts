@@ -50,6 +50,41 @@ const afternoonSlot: ScheduleSlot = {
   },
 };
 
+const tenSlot: ScheduleSlot = {
+  ...morningSlot,
+  startAt: '2026-05-11T14:00:00.000Z',
+  endAt: '2026-05-11T14:30:00.000Z',
+  metadata: { cell_range: 'AM8', sheet_name: 'Schedule' },
+};
+
+const elevenSlot: ScheduleSlot = {
+  ...morningSlot,
+  startAt: '2026-05-11T15:00:00.000Z',
+  endAt: '2026-05-11T15:30:00.000Z',
+  metadata: { cell_range: 'AM12', sheet_name: 'Schedule' },
+};
+
+const thirteenSlot: ScheduleSlot = {
+  ...afternoonSlot,
+  startAt: '2026-05-11T17:00:00.000Z',
+  endAt: '2026-05-11T17:30:00.000Z',
+  metadata: { cell_range: 'AM20', sheet_name: 'Schedule' },
+};
+
+const fifteenSlot: ScheduleSlot = {
+  ...afternoonSlot,
+  startAt: '2026-05-11T19:00:00.000Z',
+  endAt: '2026-05-11T19:30:00.000Z',
+  metadata: { cell_range: 'AM28', sheet_name: 'Schedule' },
+};
+
+const sixteenSlot: ScheduleSlot = {
+  ...afternoonSlot,
+  startAt: '2026-05-11T20:00:00.000Z',
+  endAt: '2026-05-11T20:30:00.000Z',
+  metadata: { cell_range: 'AM32', sheet_name: 'Schedule' },
+};
+
 const basePayload = {
   clinicId,
   contactId,
@@ -104,6 +139,129 @@ describe('booking apply route', () => {
         service: 'Cleaning',
         from: '2026-05-11T00:00:00.000Z',
         to: '2026-05-12T00:00:00.000Z',
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+
+
+  it('enforces before time window and does not propose 10:00 or 11:00', async () => {
+    const repository = new InMemoryAppointmentRepository();
+    const adapter = new MockScheduleAdapter({ slots: [elevenSlot, tenSlot, morningSlot] });
+    const app = await buildTestApp(repository, adapter);
+
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/booking/apply',
+        payload: {
+          ...basePayload,
+          timeOfDay: 'any',
+          preferredTimeWindow: { startTime: null, endTime: '10:00' },
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        booking_status: 'awaiting_patient_confirmation',
+        proposed_slot: { start_at: morningSlot.startAt },
+      });
+      expect(response.json().proposed_slots).toHaveLength(1);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('enforces after time window and does not propose 13:00', async () => {
+    const app = await buildTestApp(new InMemoryAppointmentRepository(), new MockScheduleAdapter({ slots: [thirteenSlot, afternoonSlot] }));
+
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/booking/apply',
+        payload: {
+          ...basePayload,
+          timeOfDay: 'any',
+          preferredTimeWindow: { startTime: '14:00', endTime: null },
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({ proposed_slot: { start_at: afternoonSlot.startAt } });
+      expect(response.json().proposed_slots.map((slot: { start_at: string }) => slot.start_at)).toEqual([afternoonSlot.startAt]);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('enforces between time window inclusively', async () => {
+    const app = await buildTestApp(new InMemoryAppointmentRepository(), new MockScheduleAdapter({ slots: [thirteenSlot, afternoonSlot, fifteenSlot, sixteenSlot] }));
+
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/booking/apply',
+        payload: {
+          ...basePayload,
+          timeOfDay: 'any',
+          preferredTimeWindow: { startTime: '14:00', endTime: '16:00' },
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json().proposed_slots.map((slot: { start_at: string }) => slot.start_at)).toEqual([
+        afternoonSlot.startAt,
+        fifteenSlot.startAt,
+        sixteenSlot.startAt,
+      ]);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('enforces exactTime and only proposes a matching start HH:mm', async () => {
+    const app = await buildTestApp(new InMemoryAppointmentRepository(), new MockScheduleAdapter({ slots: [thirteenSlot, afternoonSlot, fifteenSlot] }));
+
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/booking/apply',
+        payload: {
+          ...basePayload,
+          timeOfDay: 'any',
+          exactTime: '14:00',
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({ proposed_slot: { start_at: afternoonSlot.startAt } });
+      expect(response.json().proposed_slots.map((slot: { start_at: string }) => slot.start_at)).toEqual([afternoonSlot.startAt]);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('returns no_slots when exactTime has no matching slot', async () => {
+    const app = await buildTestApp(new InMemoryAppointmentRepository(), new MockScheduleAdapter({ slots: [thirteenSlot, fifteenSlot] }));
+
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/booking/apply',
+        payload: {
+          ...basePayload,
+          timeOfDay: 'any',
+          exactTime: '14:00',
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        booking_status: 'no_slots',
+        proposed_slot: null,
+        proposed_slots: [],
       });
     } finally {
       await app.close();

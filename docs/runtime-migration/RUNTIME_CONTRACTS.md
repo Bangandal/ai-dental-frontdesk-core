@@ -83,6 +83,11 @@
   "preferredDateIso": "2026-05-16",
   "preferredWeekday": null,
   "timeOfDay": "any",
+  "preferredTimeWindow": {
+    "startTime": "HH:mm|null",
+    "endTime": "HH:mm|null"
+  },
+  "exactTime": "HH:mm|null",
   "activeHoldId": null,
   "patientName": "Patient",
   "channel": "telegram",

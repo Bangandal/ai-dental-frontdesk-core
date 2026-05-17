@@ -88,7 +88,10 @@ describe('RuntimeAvailabilityPlanner', () => {
       ai_output: validAIOutput({ availability_query: availabilityQuery({ search_type: 'time_constraint', time_window: timeWindow }) }),
     });
 
-    expect(result.booking_request).toMatchObject({ timeOfDay: 'morning' });
+    expect(result.booking_request).toMatchObject({
+      timeOfDay: 'morning',
+      preferredTimeWindow: { startTime: null, endTime: '10:00' },
+    });
     expect(result.booking_request?.metadata).toMatchObject({ time_window: timeWindow });
   });
 
@@ -112,7 +115,10 @@ describe('RuntimeAvailabilityPlanner', () => {
       }),
     });
 
-    expect(after.booking_request).toMatchObject({ timeOfDay: 'afternoon' });
+    expect(after.booking_request).toMatchObject({
+      timeOfDay: 'afternoon',
+      preferredTimeWindow: { startTime: '14:00', endTime: null },
+    });
     expect(after.booking_request?.metadata).toMatchObject({ exact_time: null, time_window: { start_time: '14:00' } });
     expect(afternoon.booking_request).toMatchObject({ timeOfDay: 'afternoon' });
   });
@@ -128,6 +134,7 @@ describe('RuntimeAvailabilityPlanner', () => {
     expect(result.booking_request).toMatchObject({
       preferredDateIso: '2026-05-12',
       timeOfDay: 'afternoon',
+      exactTime: '14:00',
       metadata: { exact_time: '14:00' },
     });
   });
