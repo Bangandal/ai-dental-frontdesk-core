@@ -72,6 +72,13 @@ export function planRuntimeAvailability(input: RuntimeAvailabilityPlannerInput):
     warnings.push('availability_query_fallback_from_booking');
   }
 
+  const preferredDateIso = resolvePreferredDateIso(effectiveQuery, input.current_clinic_date_iso, warnings);
+  const timeValidation = validateTimeConstraints(effectiveQuery, effectiveSearchType);
+
+  if (!timeValidation.ok) {
+    return askClarification(timeValidation.reason, warnings);
+  }
+
   if (serviceInterest === null) {
     return {
       should_call_booking: false,
@@ -83,10 +90,9 @@ export function planRuntimeAvailability(input: RuntimeAvailabilityPlannerInput):
     };
   }
 
-  const preferredDateIso = resolvePreferredDateIso(effectiveQuery, input.current_clinic_date_iso, warnings);
   const timeOfDay = resolveTimeOfDay(effectiveQuery, input.ai_output.booking.time_of_day);
-  const preferredTimeWindow = resolvePreferredTimeWindow(effectiveQuery);
-  const exactTime = effectiveQuery.exact_time;
+  const preferredTimeWindow = timeValidation.preferredTimeWindow;
+  const exactTime = timeValidation.exactTime;
 
   if (effectiveSearchType === 'specific_date' && preferredDateIso === null) {
     return askClarification('specific_date_missing_date', warnings);
@@ -100,7 +106,7 @@ export function planRuntimeAvailability(input: RuntimeAvailabilityPlannerInput):
     return askClarification('relative_day_missing_or_invalid', warnings);
   }
 
-  if (effectiveSearchType === 'exact_slot' && preferredDateIso === null) {
+  if (effectiveSearchType === 'exact_slot' && !isValidDateIso(effectiveQuery.date_iso)) {
     return askClarification('exact_slot_missing_date', warnings);
   }
 
@@ -214,27 +220,71 @@ function resolveNearestWeekday(currentDateIso: string, weekday: Weekday): string
   return addDays(currentDateIso, offset);
 }
 
+type TimeValidationResult =
+  | { ok: true; exactTime: string | null; preferredTimeWindow: { startTime: string | null; endTime: string | null } | null }
+  | { ok: false; reason: 'exact_slot_missing_time' | 'exact_slot_invalid_time' | 'time_window_missing_or_invalid' | 'time_window_invalid_range' };
 
-function resolvePreferredTimeWindow(query: AvailabilityQuery): { startTime: string | null; endTime: string | null } | null {
+function validateTimeConstraints(query: AvailabilityQuery, searchType: AvailabilitySearchType): TimeValidationResult {
+  const exactTime = query.exact_time;
+
+  if (exactTime !== null && parseTimeToMinutes(exactTime) === null) {
+    return { ok: false, reason: searchType === 'exact_slot' ? 'exact_slot_invalid_time' : 'time_window_missing_or_invalid' };
+  }
+
+  if (searchType === 'exact_slot' && exactTime === null) {
+    return { ok: false, reason: 'exact_slot_missing_time' };
+  }
+
   const window = query.time_window;
 
   if (window === null) {
-    return null;
+    return { ok: true, exactTime, preferredTimeWindow: null };
   }
 
   if (window.type === 'before') {
-    return { startTime: null, endTime: window.end_time };
+    return validateBeforeWindow(window.end_time, exactTime);
   }
 
   if (window.type === 'after') {
-    return { startTime: window.start_time, endTime: null };
+    return validateAfterWindow(window.start_time, exactTime);
   }
 
   if (window.type === 'between') {
-    return { startTime: window.start_time, endTime: window.end_time };
+    return validateBetweenWindow(window.start_time, window.end_time, exactTime);
   }
 
-  return null;
+  return { ok: true, exactTime, preferredTimeWindow: null };
+}
+
+function validateBeforeWindow(endTime: string | null, exactTime: string | null): TimeValidationResult {
+  if (parseTimeToMinutes(endTime) === null) {
+    return { ok: false, reason: 'time_window_missing_or_invalid' };
+  }
+
+  return { ok: true, exactTime, preferredTimeWindow: { startTime: null, endTime } };
+}
+
+function validateAfterWindow(startTime: string | null, exactTime: string | null): TimeValidationResult {
+  if (parseTimeToMinutes(startTime) === null) {
+    return { ok: false, reason: 'time_window_missing_or_invalid' };
+  }
+
+  return { ok: true, exactTime, preferredTimeWindow: { startTime, endTime: null } };
+}
+
+function validateBetweenWindow(startTime: string | null, endTime: string | null, exactTime: string | null): TimeValidationResult {
+  const startMinutes = parseTimeToMinutes(startTime);
+  const endMinutes = parseTimeToMinutes(endTime);
+
+  if (startMinutes === null || endMinutes === null) {
+    return { ok: false, reason: 'time_window_missing_or_invalid' };
+  }
+
+  if (startMinutes > endMinutes) {
+    return { ok: false, reason: 'time_window_invalid_range' };
+  }
+
+  return { ok: true, exactTime, preferredTimeWindow: { startTime, endTime } };
 }
 
 function resolveTimeOfDay(
@@ -367,11 +417,17 @@ function addDays(dateIso: string, days: number): string | null {
 }
 
 function parseHourMinute(value: string | null): number | null {
+  const minutes = parseTimeToMinutes(value);
+
+  return minutes === null ? null : Math.floor(minutes / 60);
+}
+
+function parseTimeToMinutes(value: string | null): number | null {
   if (value === null) {
     return null;
   }
 
-  const match = /^(\d{1,2}):(\d{2})$/u.exec(value);
+  const match = /^([01]\d|2[0-3]):([0-5]\d)$/u.exec(value);
 
   if (match === null) {
     return null;
@@ -380,11 +436,7 @@ function parseHourMinute(value: string | null): number | null {
   const hour = Number.parseInt(match[1] ?? '', 10);
   const minute = Number.parseInt(match[2] ?? '', 10);
 
-  if (!Number.isInteger(hour) || !Number.isInteger(minute) || hour < 0 || hour > 23 || minute < 0 || minute > 59) {
-    return null;
-  }
-
-  return hour;
+  return hour * 60 + minute;
 }
 
 function parseDateIsoParts(value: string | null): { year: number; month: number; day: number } | null {

@@ -1129,6 +1129,34 @@ describe('runtime routes', () => {
     }
   });
 
+  it('does not call booking when exact_slot exact_time is invalid', async () => {
+    const repository = new FakeRuntimeTurnRepository({ cases: [makeCase({ collected: { service_interest: 'консультация' } })] });
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'availability_request',
+      requested_action: 'check_availability',
+      availability_query: availabilityQuery({ search_type: 'exact_slot', date_iso: '2026-05-12', exact_time: '14.00' }),
+    }));
+    const bookingApplyService = new FakeBookingApplyService(awaitingConfirmationResponse());
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, { runtimeTurnService: new RuntimeTurnService(repository, aiClient, bookingApplyService) });
+
+    try {
+      const response = await app.inject({ method: 'POST', url: '/runtime/turn', payload: { ...validPayload, text: '12.05 на 14.00' } });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        booking_result: null,
+        debug: {
+          reply_source: 'policy',
+          policy_decision: { should_call_booking: false, reason: 'exact_slot_invalid_time' },
+        },
+      });
+      expect(bookingApplyService.calls).toEqual([]);
+    } finally {
+      await app.close();
+    }
+  });
+
   it('asks clarification for unknown availability query without calling booking', async () => {
     const repository = new FakeRuntimeTurnRepository({ cases: [makeCase({ collected: { service_interest: 'консультация' } })] });
     const aiClient = new FakeRuntimeAIClient(validAIOutput({

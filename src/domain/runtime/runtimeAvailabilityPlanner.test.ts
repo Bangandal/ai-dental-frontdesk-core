@@ -139,6 +139,76 @@ describe('RuntimeAvailabilityPlanner', () => {
     });
   });
 
+
+
+  it('blocks exact_slot with invalid or missing exact_time before booking', () => {
+    const invalid = planRuntimeAvailability({
+      ...basePlannerInput(),
+      ai_output: validAIOutput({
+        availability_query: availabilityQuery({ search_type: 'exact_slot', date_iso: '2026-05-12', exact_time: '14.00' }),
+      }),
+    });
+    const missing = planRuntimeAvailability({
+      ...basePlannerInput(),
+      ai_output: validAIOutput({
+        availability_query: availabilityQuery({ search_type: 'exact_slot', date_iso: '2026-05-12', exact_time: null }),
+      }),
+    });
+
+    expect(invalid).toMatchObject({
+      should_call_booking: false,
+      booking_request: null,
+      reason: 'exact_slot_invalid_time',
+    });
+    expect(missing).toMatchObject({
+      should_call_booking: false,
+      booking_request: null,
+      reason: 'exact_slot_missing_time',
+    });
+  });
+
+  it('blocks incomplete or invalid bounded time windows before booking', () => {
+    const before = planRuntimeAvailability({
+      ...basePlannerInput(),
+      ai_output: validAIOutput({
+        availability_query: availabilityQuery({ search_type: 'time_constraint', time_window: { type: 'before', start_time: null, end_time: null } }),
+      }),
+    });
+    const after = planRuntimeAvailability({
+      ...basePlannerInput(),
+      ai_output: validAIOutput({
+        availability_query: availabilityQuery({ search_type: 'time_constraint', time_window: { type: 'after', start_time: null, end_time: null } }),
+      }),
+    });
+    const invalidRange = planRuntimeAvailability({
+      ...basePlannerInput(),
+      ai_output: validAIOutput({
+        availability_query: availabilityQuery({ search_type: 'time_constraint', time_window: { type: 'between', start_time: '16:00', end_time: '14:00' } }),
+      }),
+    });
+
+    expect(before).toMatchObject({ should_call_booking: false, booking_request: null, reason: 'time_window_missing_or_invalid' });
+    expect(after).toMatchObject({ should_call_booking: false, booking_request: null, reason: 'time_window_missing_or_invalid' });
+    expect(invalidRange).toMatchObject({ should_call_booking: false, booking_request: null, reason: 'time_window_invalid_range' });
+  });
+
+  it('passes valid between window as an enforceable booking field', () => {
+    const result = planRuntimeAvailability({
+      ...basePlannerInput(),
+      ai_output: validAIOutput({
+        availability_query: availabilityQuery({
+          search_type: 'time_constraint',
+          time_window: { type: 'between', start_time: '14:00', end_time: '16:00' },
+        }),
+      }),
+    });
+
+    expect(result.booking_request).toMatchObject({
+      preferredTimeWindow: { startTime: '14:00', endTime: '16:00' },
+      timeOfDay: 'afternoon',
+    });
+  });
+
   it('blocks availability booking when service is missing', () => {
     const result = planRuntimeAvailability({
       ...basePlannerInput({ case_context: { ...caseContext, current_case: { ...caseContext.current_case!, collected: {} } } }),
