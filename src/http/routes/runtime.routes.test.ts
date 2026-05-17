@@ -222,7 +222,7 @@ describe('runtime routes', () => {
     }
   });
 
-  it('does not call booking for FAQ AI output and uses AI draft', async () => {
+  it('does not call booking for FAQ AI output and blocks ungrounded AI draft', async () => {
     const repository = new FakeRuntimeTurnRepository();
     const aiClient = new FakeRuntimeAIClient(validAIOutput({
       conversation_intent: 'faq',
@@ -240,11 +240,11 @@ describe('runtime routes', () => {
 
       expect(response.statusCode).toBe(200);
       expect(response.json()).toMatchObject({
-        reply_text: 'Консультация стоит 500 Kč.',
+        reply_text: RUNTIME_AI_SAFE_FALLBACK_REPLY,
         booking_result: null,
         side_effects: [],
         debug: {
-          reply_source: 'ai_draft',
+          reply_source: 'safe_fallback',
           policy_decision: {
             should_call_booking: false,
             reason: 'no_booking_for_faq',
@@ -465,10 +465,10 @@ describe('runtime routes', () => {
 
       expect(response.statusCode).toBe(200);
       expect(response.json()).toMatchObject({
-        reply_text: 'Консультация стоит 500 Kč.',
+        reply_text: RUNTIME_AI_SAFE_FALLBACK_REPLY,
         side_effects: [],
         debug: {
-          reply_source: 'ai_draft',
+          reply_source: 'safe_fallback',
           outbound_message_id: '77777777-7777-7777-7777-777777777777',
         },
       });
@@ -478,11 +478,11 @@ describe('runtime routes', () => {
         contactId: '22222222-2222-2222-2222-222222222222',
         caseId: null,
         channel: 'telegram',
-        text: 'Консультация стоит 500 Kč.',
+        text: RUNTIME_AI_SAFE_FALLBACK_REPLY,
         replyToMessageId: '44444444-4444-4444-4444-444444444444',
         meta: {
           source: 'runtime_turn',
-          reply_source: 'ai_draft',
+          reply_source: 'safe_fallback',
           prompt_version: 'runtime-ai-extraction-v1',
           policy_decision: {
             reason: 'no_booking_for_faq',
@@ -603,10 +603,10 @@ describe('runtime routes', () => {
 
       expect(response.statusCode).toBe(200);
       expect(response.json()).toMatchObject({
-        reply_text: 'Консультация стоит 500 Kč.',
+        reply_text: RUNTIME_AI_SAFE_FALLBACK_REPLY,
         side_effects: [],
         debug: {
-          reply_source: 'ai_draft',
+          reply_source: 'safe_fallback',
           outbound_persistence_error: {
             code: 'outbound_persistence_failed',
             message: 'Outbound assistant message persistence failed.',
@@ -1274,6 +1274,184 @@ describe('runtime routes', () => {
         debug: { conversation_mode: 'faq_address', reply_source: 'policy' },
       });
       expect(repository.calls.notification).toBeUndefined();
+    } finally {
+      await app.close();
+    }
+  });
+
+
+  it('does not return AI draft with fake address when faq_address lacks location_packet and KB', async () => {
+    const repository = new FakeRuntimeTurnRepository();
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'faq',
+      requested_action: 'answer_faq',
+      faq_topic: 'address',
+      reply_draft: 'Ми на Fake Street 123.',
+    }));
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, { runtimeTurnService: new RuntimeTurnService(repository, aiClient) });
+
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/runtime/turn',
+        payload: { ...validPayload, text: 'яка у вас адреса?' },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        reply_text: 'Підкажіть, будь ласка, з якою філією або адресою допомогти? Я зорієнтую.',
+        side_effects: [],
+        debug: { conversation_mode: 'faq_address', reply_source: 'safe_fallback' },
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('uses KB text and still returns location_packet for faq_address when both are available', async () => {
+    const repository = new FakeRuntimeTurnRepository({
+      notificationSettings: {
+        location_packet: {
+          address: 'Praha 1, Dlouhá 10',
+          maps_url: 'https://maps.example/clinic-one',
+          photo_keys: ['clinic-front'],
+        },
+      },
+    });
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'faq',
+      requested_action: 'answer_faq',
+      faq_topic: 'address',
+      reply_draft: 'AI address should not win.',
+    }));
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, {
+      runtimeTurnService: new RuntimeTurnService(
+        repository,
+        aiClient,
+        undefined,
+        undefined,
+        new FakeRuntimeKnowledgeRepository({
+          found: true,
+          count: 1,
+          top_similarity: 0.9,
+          context_text: 'Клініка знаходиться біля метро, вхід з двору.',
+          snippets: [{
+            title: 'Address details',
+            content: 'Клініка знаходиться біля метро, вхід з двору.',
+            metadata: { source_type: 'faq' },
+            score: 0.9,
+            source_type: 'faq',
+          }],
+        }),
+        new FakeRuntimeEmbeddingClient(makeEmbedding()),
+      ),
+    });
+
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/runtime/turn',
+        payload: { ...validPayload, text: 'де ви знаходитесь?' },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        reply_text: 'Клініка знаходиться біля метро, вхід з двору.',
+        side_effects: [{
+          type: 'location_packet',
+          channel: 'telegram',
+          address: 'Praha 1, Dlouhá 10',
+          maps_url: 'https://maps.example/clinic-one',
+          photo_keys: ['clinic-front'],
+        }],
+        debug: { conversation_mode: 'faq_address', reply_source: 'kb' },
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('uses KB for faq_topic other answer_faq replies', async () => {
+    const repository = new FakeRuntimeTurnRepository();
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'faq',
+      requested_action: 'answer_faq',
+      faq_topic: 'other',
+      reply_draft: 'AI factual draft should not win.',
+    }));
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, {
+      runtimeTurnService: new RuntimeTurnService(
+        repository,
+        aiClient,
+        undefined,
+        undefined,
+        new FakeRuntimeKnowledgeRepository({
+          found: true,
+          count: 1,
+          top_similarity: 0.84,
+          context_text: 'Після відбілювання не рекомендуємо каву протягом 48 годин.',
+          snippets: [{
+            title: 'Whitening aftercare',
+            content: 'Після відбілювання не рекомендуємо каву протягом 48 годин.',
+            metadata: { source_type: 'faq' },
+            score: 0.84,
+            source_type: 'faq',
+          }],
+        }),
+        new FakeRuntimeEmbeddingClient(makeEmbedding()),
+      ),
+    });
+
+    try {
+      const response = await app.inject({ method: 'POST', url: '/runtime/turn', payload: { ...validPayload, text: 'чи можна каву після відбілювання?' } });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        reply_text: 'Після відбілювання не рекомендуємо каву протягом 48 годин.',
+        debug: { reply_source: 'kb' },
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('does not return AI draft for faq_topic other answer_faq without KB', async () => {
+    const repository = new FakeRuntimeTurnRepository();
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'faq',
+      requested_action: 'answer_faq',
+      faq_topic: 'other',
+      reply_draft: 'Ми точно робимо вигадану процедуру.',
+    }));
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, {
+      runtimeTurnService: new RuntimeTurnService(
+        repository,
+        aiClient,
+        undefined,
+        undefined,
+        new FakeRuntimeKnowledgeRepository({
+          found: false,
+          count: 0,
+          top_similarity: null,
+          context_text: null,
+          snippets: [],
+        }),
+        new FakeRuntimeEmbeddingClient(makeEmbedding()),
+      ),
+    });
+
+    try {
+      const response = await app.inject({ method: 'POST', url: '/runtime/turn', payload: { ...validPayload, text: 'ви робите вигадану процедуру?' } });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        reply_text: RUNTIME_AI_SAFE_FALLBACK_REPLY,
+        debug: { reply_source: 'safe_fallback', kb_result: { found: false, count: 0 } },
+      });
     } finally {
       await app.close();
     }

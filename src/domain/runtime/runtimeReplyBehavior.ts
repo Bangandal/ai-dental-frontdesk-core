@@ -33,19 +33,27 @@ export function buildRuntimeReplyBehavior(input: RuntimeReplyBehaviorInput): Run
 
   if (input.conversation_mode === 'faq_address') {
     const locationPacket = buildLocationPacket(input.clinic.settings, input.channel);
-    const aiDraft = readNonEmpty(input.ai_output?.reply_draft);
+    const knowledgeReply = buildKnowledgeReply(input.knowledge_result);
 
     if (locationPacket !== null) {
       return {
-        reply_text: buildAddressReply(locationPacket),
-        reply_source: 'policy',
+        reply_text: knowledgeReply ?? buildAddressReply(locationPacket),
+        reply_source: knowledgeReply === null ? 'policy' : 'kb',
         side_effects: [locationPacket],
       };
     }
 
+    if (knowledgeReply !== null) {
+      return {
+        reply_text: knowledgeReply,
+        reply_source: 'kb',
+        side_effects: [],
+      };
+    }
+
     return {
-      reply_text: aiDraft ?? 'Підкажіть, будь ласка, з якою філією або адресою допомогти? Я зорієнтую.',
-      reply_source: aiDraft === undefined ? 'safe_fallback' : 'ai_draft',
+      reply_text: 'Підкажіть, будь ласка, з якою філією або адресою допомогти? Я зорієнтую.',
+      reply_source: 'safe_fallback',
       side_effects: [],
     };
   }
@@ -84,7 +92,7 @@ export function buildRuntimeReplyBehavior(input: RuntimeReplyBehaviorInput): Run
 
   const knowledgeReply = buildKnowledgeReply(input.knowledge_result);
 
-  if (knowledgeReply !== null && isKnowledgeGroundedMode(input.conversation_mode)) {
+  if (knowledgeReply !== null && requiresKnowledgeGrounding(input)) {
     return {
       reply_text: knowledgeReply,
       reply_source: 'kb',
@@ -94,7 +102,7 @@ export function buildRuntimeReplyBehavior(input: RuntimeReplyBehaviorInput): Run
 
   const aiDraft = readNonEmpty(input.ai_output?.reply_draft);
 
-  if (aiDraft !== undefined && !requiresKnowledgeGrounding(input.conversation_mode)) {
+  if (aiDraft !== undefined && !requiresKnowledgeGrounding(input)) {
     return {
       reply_text: aiDraft,
       reply_source: 'ai_draft',
@@ -205,10 +213,20 @@ function buildKnowledgeReply(knowledgeResult: RuntimeKnowledgeResult | null | un
   return firstSnippet === undefined ? null : firstSnippet.content;
 }
 
-function isKnowledgeGroundedMode(mode: RuntimeConversationMode): boolean {
-  return mode === 'faq_price' || mode === 'faq_insurance' || mode === 'post_booking_question';
-}
+function requiresKnowledgeGrounding(input: RuntimeReplyBehaviorInput): boolean {
+  if (input.conversation_mode === 'faq_price'
+    || input.conversation_mode === 'faq_insurance'
+    || input.conversation_mode === 'faq_address'
+    || input.conversation_mode === 'post_booking_question') {
+    return true;
+  }
 
-function requiresKnowledgeGrounding(mode: RuntimeConversationMode): boolean {
-  return isKnowledgeGroundedMode(mode);
+  const aiOutput = input.ai_output;
+
+  if (aiOutput === null) {
+    return false;
+  }
+
+  return aiOutput.conversation_intent === 'faq'
+    || aiOutput.requested_action === 'answer_faq';
 }
