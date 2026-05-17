@@ -13,6 +13,7 @@ import { AppointmentLifecycleService } from '../../domain/appointments/appointme
 import { PgAppointmentRepository } from '../../domain/appointments/appointmentRepository.js';
 import { BookingApplyService } from '../../domain/booking/bookingApply.js';
 import { runtimeTurnInputSchema } from '../../domain/runtime/runtimeContracts.js';
+import type { RuntimeKnowledgeQueryable } from '../../domain/runtime/runtimeKnowledgeRepository.js';
 
 export interface RuntimeRoutesOptions {
   runtimeTurnService?: RuntimeTurnService;
@@ -84,6 +85,15 @@ async function createDefaultRuntimeTurnService(): Promise<RuntimeTurnService> {
     openaiTimeoutMs: env.OPENAI_TIMEOUT_MS,
   });
 
+  const knowledgeRuntime = await createRuntimeKnowledgeRuntime({
+    openaiApiKey: env.OPENAI_API_KEY,
+    openaiEmbeddingModel: env.OPENAI_EMBEDDING_MODEL,
+    openaiTimeoutMs: env.OPENAI_TIMEOUT_MS,
+    retrievalLimit: env.KB_RETRIEVAL_LIMIT,
+    minSimilarity: env.KB_MIN_SIMILARITY,
+    pool,
+  });
+
   const appointmentRepository = new PgAppointmentRepository(pool);
   const appointmentLifecycle = new AppointmentLifecycleService({ repository: appointmentRepository });
   const bookingApplyService = new BookingApplyService(appointmentLifecycle, appointmentRepository);
@@ -92,9 +102,47 @@ async function createDefaultRuntimeTurnService(): Promise<RuntimeTurnService> {
     new PgRuntimeTurnRepository(pool),
     aiClient,
     bookingApplyService,
+    undefined,
+    knowledgeRuntime.repository,
+    knowledgeRuntime.embeddingClient,
   );
 
   return defaultRuntimeTurnService;
+}
+
+
+interface RuntimeKnowledgeFactoryConfig {
+  openaiApiKey?: string;
+  openaiEmbeddingModel?: string;
+  openaiTimeoutMs?: number;
+  retrievalLimit: number;
+  minSimilarity: number;
+  pool: RuntimeKnowledgeQueryable;
+}
+
+async function createRuntimeKnowledgeRuntime(config: RuntimeKnowledgeFactoryConfig) {
+  const { NoopRuntimeKnowledgeRepository, PgRuntimeKnowledgeRepository } = await import('../../domain/runtime/runtimeKnowledgeRepository.js');
+
+  if (config.openaiApiKey === undefined || config.openaiApiKey.trim() === '') {
+    return {
+      repository: new NoopRuntimeKnowledgeRepository(),
+      embeddingClient: undefined,
+    };
+  }
+
+  const { OpenAIRuntimeEmbeddingClient } = await import('../../domain/runtime/runtimeEmbeddingClient.js');
+
+  return {
+    repository: new PgRuntimeKnowledgeRepository(config.pool, {
+      retrievalLimit: config.retrievalLimit,
+      minSimilarity: config.minSimilarity,
+    }),
+    embeddingClient: new OpenAIRuntimeEmbeddingClient({
+      apiKey: config.openaiApiKey,
+      model: config.openaiEmbeddingModel,
+      timeoutMs: config.openaiTimeoutMs,
+    }),
+  };
 }
 
 export async function createRuntimeAIClient(config: RuntimeAIClientFactoryConfig): Promise<RuntimeAIClient> {

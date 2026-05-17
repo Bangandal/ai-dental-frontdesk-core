@@ -31,6 +31,9 @@ const envSchema = z.object({
   OPENAI_API_KEY: z.string().min(1).optional(),
   OPENAI_MODEL: z.string().min(1).optional(),
   OPENAI_TIMEOUT_MS: z.coerce.number().int().positive().optional(),
+  OPENAI_EMBEDDING_MODEL: z.string().min(1).optional(),
+  KB_RETRIEVAL_LIMIT: z.coerce.number().int().positive().default(5),
+  KB_MIN_SIMILARITY: z.coerce.number().min(0).max(1).default(0.55),
 });
 
 export const env = envSchema.parse(process.env);

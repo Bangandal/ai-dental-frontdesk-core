@@ -17,6 +17,8 @@ import { classifyRuntimeConversationMode, type RuntimeConversationMode } from '.
 import { decideRuntimeAction, type RuntimePolicyDecision } from './runtimePolicy.js';
 import { buildRuntimeReplyBehavior } from './runtimeReplyBehavior.js';
 import type { RuntimeReplySource } from './runtimeReplyBuilder.js';
+import type { RuntimeEmbeddingClient } from './runtimeEmbeddingClient.js';
+import { NoopRuntimeKnowledgeRepository, type RuntimeKnowledgeRepository, type RuntimeKnowledgeResult } from './runtimeKnowledgeRepository.js';
 
 export interface RuntimeClinicRecord {
   id: string;
@@ -253,6 +255,8 @@ export class RuntimeTurnService {
     private readonly aiClient: RuntimeAIClient = new NoopRuntimeAIClient(),
     private readonly bookingApplyService?: RuntimeBookingApplyService,
     private readonly clock: () => Date = () => new Date(),
+    private readonly knowledgeRepository: RuntimeKnowledgeRepository = new NoopRuntimeKnowledgeRepository(),
+    private readonly embeddingClient?: RuntimeEmbeddingClient,
   ) {}
 
   async handleTurn(input: RuntimeTurnInput): Promise<RuntimeTurnResult> {
@@ -353,6 +357,7 @@ export class RuntimeTurnService {
     let policyDecisionForReply: RuntimePolicyDecision | null = null;
     let conversationMode: RuntimeConversationMode = 'safe_fallback';
     let replySideEffects: RuntimeSideEffect[] = [];
+    let knowledgeResult: RuntimeKnowledgeResult | null = null;
 
     try {
       const rawAIOutput = await this.aiClient.extract({
@@ -410,6 +415,7 @@ export class RuntimeTurnService {
             clinic,
             ai_output: aiOutput,
             channel: input.channel,
+            knowledge_result: knowledgeResult,
           });
           replyText = replyDecision.reply_text;
           replySource = replyDecision.reply_source;
@@ -436,6 +442,15 @@ export class RuntimeTurnService {
           case_context: caseContext,
           booking_context: bookingContext,
         });
+        knowledgeResult = await this.retrieveKnowledgeForReply({
+          aiOutput,
+          clinicId: clinic.id,
+          userText: input.text,
+          language: input.meta?.language_code ?? null,
+          conversationMode,
+          traceId,
+          debug,
+        });
         const replyDecision = buildRuntimeReplyBehavior({
           conversation_mode: conversationMode,
           booking_result: bookingResult,
@@ -445,6 +460,7 @@ export class RuntimeTurnService {
           clinic,
           ai_output: aiOutput,
           channel: input.channel,
+          knowledge_result: knowledgeResult,
         });
         replyText = replyDecision.reply_text;
         replySource = replyDecision.reply_source;
@@ -483,6 +499,7 @@ export class RuntimeTurnService {
         clinic,
         ai_output: null,
         channel: input.channel,
+        knowledge_result: knowledgeResult,
       });
       replyText = replyDecision.reply_text;
       replySource = replyDecision.reply_source;
@@ -539,6 +556,52 @@ export class RuntimeTurnService {
       side_effects: sideEffects,
       debug,
     };
+  }
+
+  private async retrieveKnowledgeForReply(input: RetrieveKnowledgeForReplyInput): Promise<RuntimeKnowledgeResult | null> {
+    if (this.embeddingClient === undefined || !shouldRetrieveKnowledge(input.conversationMode, input.aiOutput)) {
+      return null;
+    }
+
+    const queryText = buildRuntimeKnowledgeQueryText({
+      faqTopic: input.aiOutput.faq_topic,
+      serviceInterest: input.aiOutput.slot_updates.service_interest,
+      userText: input.userText,
+      language: input.language,
+    });
+
+    input.debug.kb_query = {
+      enabled: true,
+      query_text: queryText,
+    };
+
+    try {
+      const queryEmbedding = await this.embeddingClient.embedText({
+        text: queryText,
+        trace_id: input.traceId,
+      });
+      const knowledgeResult = await this.knowledgeRepository.retrieve({
+        clinicId: input.clinicId,
+        queryEmbedding,
+        trace_id: input.traceId,
+      });
+
+      input.debug.kb_result = {
+        found: knowledgeResult.found,
+        count: knowledgeResult.count,
+        top_similarity: knowledgeResult.top_similarity,
+        snippets: knowledgeResult.snippets.map((snippet) => ({
+          title: snippet.title,
+          score: snippet.score,
+          source_type: snippet.source_type,
+        })),
+      };
+
+      return knowledgeResult;
+    } catch (error) {
+      input.debug.kb_error = formatRuntimeKnowledgeError(error);
+      return null;
+    }
   }
 
   private async createAdminNotificationSideEffect(input: CreateAdminNotificationSideEffectInput): Promise<RuntimeSideEffect[]> {
@@ -604,6 +667,56 @@ export class RuntimeTurnService {
       return [];
     }
   }
+}
+
+interface RetrieveKnowledgeForReplyInput {
+  aiOutput: RuntimeAIOutput;
+  clinicId: string;
+  userText: string;
+  language: string | null;
+  conversationMode: RuntimeConversationMode;
+  traceId: string;
+  debug: Record<string, unknown>;
+}
+
+function shouldRetrieveKnowledge(conversationMode: RuntimeConversationMode, aiOutput: RuntimeAIOutput): boolean {
+  return conversationMode === 'faq_price'
+    || conversationMode === 'faq_insurance'
+    || conversationMode === 'post_booking_question'
+    || aiOutput.requested_action === 'answer_faq';
+}
+
+function buildRuntimeKnowledgeQueryText(input: {
+  faqTopic: RuntimeAIOutput['faq_topic'];
+  serviceInterest: string | null;
+  userText: string;
+  language: string | null;
+}): string {
+  return [
+    `faq_topic: ${input.faqTopic}`,
+    `service_interest: ${input.serviceInterest?.trim() === '' || input.serviceInterest === null ? 'unknown' : input.serviceInterest}`,
+    `question: ${input.userText}`,
+    `language: ${input.language?.trim() === '' || input.language === null ? 'unknown' : input.language}`,
+  ].join('\n');
+}
+
+function formatRuntimeKnowledgeError(error: unknown): Record<string, string> {
+  return {
+    code: readRuntimeKnowledgeErrorCode(error),
+    message: 'Runtime KB retrieval failed; replying with safe fallback where grounding is required.',
+  };
+}
+
+function readRuntimeKnowledgeErrorCode(error: unknown): string {
+  if (typeof error === 'object' && error !== null && 'code' in error && typeof error.code === 'string') {
+    return error.code;
+  }
+
+  if (error instanceof Error && error.name.trim() !== '') {
+    return error.name;
+  }
+
+  return 'runtime_kb_retrieval_failed';
 }
 
 interface CreateAdminNotificationSideEffectInput {

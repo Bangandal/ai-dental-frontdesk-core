@@ -29,3 +29,7 @@ NODE_OPTIONS="--max-old-space-size=1536" npm run build
 ## OpenAI runtime manual test
 
 See `docs/runtime-migration/OPENAI_RUNTIME_TEST.md` for the PR 4B OpenAI runtime adapter manual curl test and required environment variables.
+
+## PR supersession note
+
+PR #18 supersedes/fixes PR #17 for runtime KB/RAG. Do not merge PR #17 as-is because its generic single-`jsonb` KB adapter is not the deployed Supabase pgvector contract.

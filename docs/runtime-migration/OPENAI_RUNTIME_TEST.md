@@ -9,8 +9,9 @@ PR 4B adds the real OpenAI-backed runtime AI adapter for semantic extraction onl
 - `OPENAI_API_KEY`
 - `OPENAI_MODEL`
 - Optional: `OPENAI_TIMEOUT_MS`
+- Optional KB/RAG grounding: `OPENAI_EMBEDDING_MODEL` (defaults to `text-embedding-3-small`), `KB_RETRIEVAL_LIMIT` (defaults to `5`), `KB_MIN_SIMILARITY` (defaults to `0.55`)
 
-`OPENAI_RUNTIME_ENABLED` defaults to `false`. When it is not set to `true`, `/runtime/turn` uses `NoopRuntimeAIClient` so the backend can run without OpenAI credentials. When `OPENAI_RUNTIME_ENABLED=true`, both `OPENAI_API_KEY` and `OPENAI_MODEL` are required. `OPENAI_MODEL` must be provided by the environment; the runtime service does not hardcode a production model.
+`OPENAI_RUNTIME_ENABLED` defaults to `false`. When it is not set to `true`, `/runtime/turn` uses `NoopRuntimeAIClient` so the backend can run without OpenAI credentials. When `OPENAI_RUNTIME_ENABLED=true`, both `OPENAI_API_KEY` and `OPENAI_MODEL` are required. `OPENAI_MODEL` must be provided by the environment; the runtime service does not hardcode a production model. When `OPENAI_API_KEY` is present, runtime FAQ grounding uses `OPENAI_EMBEDDING_MODEL` (default `text-embedding-3-small`) and calls `kb.rpc_retrieve_context_json(uuid, vector, int, real)`; if credentials or KB config are unavailable, the runtime uses a safe no-op KB repository and does not crash.
 
 ## Example curl
 

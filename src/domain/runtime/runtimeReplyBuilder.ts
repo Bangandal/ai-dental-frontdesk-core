@@ -1,7 +1,7 @@
 import type { BookingApplyResponse } from '../booking/bookingApply.js';
 import { RUNTIME_AI_SAFE_FALLBACK_REPLY } from './runtimeAiClient.js';
 
-export type RuntimeReplySource = 'booking_result' | 'policy' | 'ai_draft' | 'safe_fallback' | 'booking_error';
+export type RuntimeReplySource = 'booking_result' | 'policy' | 'ai_draft' | 'kb' | 'safe_fallback' | 'booking_error';
 
 export interface RuntimeReplyDecision {
   reply_text: string;
