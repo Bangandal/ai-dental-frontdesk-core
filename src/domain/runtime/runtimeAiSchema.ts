@@ -37,9 +37,30 @@ export const runtimeRequestedActionValues = [
 ] as const;
 
 export const runtimeTimeOfDayValues = ['morning', 'afternoon', 'evening', 'any'] as const;
+export const runtimeAvailabilitySearchTypeValues = ['nearest_available', 'specific_date', 'weekday', 'relative_day', 'exact_slot', 'time_constraint', 'unknown'] as const;
+export const runtimeWeekdayValues = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'] as const;
+export const runtimeRelativeDayValues = ['today', 'tomorrow', 'day_after_tomorrow'] as const;
+export const runtimeAvailabilityTimeWindowTypeValues = ['morning', 'afternoon', 'evening', 'before', 'after', 'between', 'any'] as const;
+export const runtimeAvailabilityFlexibilityValues = ['specific', 'flexible', 'nearest', 'unknown'] as const;
 export const runtimeConfidenceValues = ['high', 'medium', 'low'] as const;
 export const runtimeFaqTopicValues = ['price', 'insurance', 'address', 'other', 'unknown'] as const;
 export const runtimePatientScopeValues = ['self', 'another_person', 'multiple_people', 'unknown'] as const;
+
+const runtimeAvailabilityTimeWindowSchema = z.object({
+  type: z.enum(runtimeAvailabilityTimeWindowTypeValues),
+  start_time: z.string().nullable(),
+  end_time: z.string().nullable(),
+}).strict();
+
+const runtimeAvailabilityQuerySchema = z.object({
+  search_type: z.enum(runtimeAvailabilitySearchTypeValues),
+  date_iso: z.string().nullable(),
+  weekday: z.enum(runtimeWeekdayValues).nullable(),
+  relative_day: z.enum(runtimeRelativeDayValues).nullable(),
+  time_window: runtimeAvailabilityTimeWindowSchema.nullable(),
+  exact_time: z.string().nullable(),
+  flexibility: z.enum(runtimeAvailabilityFlexibilityValues),
+}).strict();
 
 export const runtimeAIOutputSchema = z.object({
   reply_draft: z.string().nullable(),
@@ -53,6 +74,7 @@ export const runtimeAIOutputSchema = z.object({
     preferred_time: z.string().nullable(),
     preferred_contact: z.string().nullable(),
   }),
+  availability_query: runtimeAvailabilityQuerySchema.nullable(),
   booking: z.object({
     preferred_date_iso: z.string().nullable(),
     preferred_weekday: z.string().nullable(),
@@ -78,6 +100,7 @@ export const runtimeAIOutputJsonSchema = {
     'conversation_intent',
     'requested_action',
     'slot_updates',
+    'availability_query',
     'booking',
     'faq_topic',
     'patient_scope',
@@ -101,6 +124,39 @@ export const runtimeAIOutputJsonSchema = {
         preferred_time: nullableStringSchema,
         preferred_contact: nullableStringSchema,
       },
+    },
+    availability_query: {
+      anyOf: [
+        { type: 'null' },
+        {
+          type: 'object',
+          additionalProperties: false,
+          required: ['search_type', 'date_iso', 'weekday', 'relative_day', 'time_window', 'exact_time', 'flexibility'],
+          properties: {
+            search_type: { type: 'string', enum: runtimeAvailabilitySearchTypeValues },
+            date_iso: nullableStringSchema,
+            weekday: { anyOf: [{ type: 'string', enum: runtimeWeekdayValues }, { type: 'null' }] },
+            relative_day: { anyOf: [{ type: 'string', enum: runtimeRelativeDayValues }, { type: 'null' }] },
+            time_window: {
+              anyOf: [
+                { type: 'null' },
+                {
+                  type: 'object',
+                  additionalProperties: false,
+                  required: ['type', 'start_time', 'end_time'],
+                  properties: {
+                    type: { type: 'string', enum: runtimeAvailabilityTimeWindowTypeValues },
+                    start_time: nullableStringSchema,
+                    end_time: nullableStringSchema,
+                  },
+                },
+              ],
+            },
+            exact_time: nullableStringSchema,
+            flexibility: { type: 'string', enum: runtimeAvailabilityFlexibilityValues },
+          },
+        },
+      ],
     },
     booking: {
       type: 'object',
