@@ -114,8 +114,10 @@ export function buildRuntimeReplyBehavior(input: RuntimeReplyBehaviorInput): Run
   }
 
   if (input.conversation_mode === 'faq_price') {
+    const hasServiceInterest = readNonEmpty(input.ai_output?.slot_updates.service_interest) !== undefined;
+
     return {
-      reply_text: runtimeReplyTemplate(input.response_language, 'faq_price_missing'),
+      reply_text: runtimeReplyTemplate(input.response_language, hasServiceInterest ? 'faq_price_unavailable' : 'faq_price_missing'),
       reply_source: 'safe_fallback',
       side_effects: [],
     };

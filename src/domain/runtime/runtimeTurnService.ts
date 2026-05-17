@@ -407,67 +407,157 @@ export class RuntimeTurnService {
         clinic_timezone: clinic.timezone,
         current_date_iso: currentDateIso,
       });
-      const aiOutput = normalizationResult.ai_output;
+      let aiOutput = normalizationResult.ai_output;
+      const pendingClarification = readPendingPriceFaqClarification(convoState.state);
+      const serviceInterest = readString(aiOutput.slot_updates.service_interest);
+
+      if (pendingClarification !== null && serviceInterest !== null) {
+        aiOutput = forcePriceFaqCompletion(aiOutput);
+        debug.pending_clarification = { ...pendingClarification, status: 'completed' };
+      }
+
       aiOutputForNotification = aiOutput;
       debug.ai_output_raw = parsedAIOutput;
       debug.ai_output = aiOutput;
       debug.date_normalization = normalizationResult.debug;
-      let policyDecision = decideRuntimeAction({
-        ai_output: aiOutput,
-        case_context: caseContext,
-        booking_context: bookingContext,
-        clinic,
-        contact_id: contact.id,
-        channel: input.channel,
-        meta: input.meta,
-        trace_id: traceId,
-        current_time_iso: turnStartedAt.toISOString(),
-        current_clinic_date_iso: currentDateIso,
-      });
 
-      const slotChoiceDecision = buildSlotChoicePolicyDecision({
-        aiOutput,
-        convoState,
-        clinic,
-        contactId: contact.id,
-        caseId: caseContext.current_case_id,
-        channel: input.channel,
-        meta: input.meta,
-        traceId,
-        responseLanguage,
-        currentTimeIso: turnStartedAt.toISOString(),
-      });
+      const pendingPriceNeedsService = pendingClarification !== null && serviceInterest === null;
+      const newPriceNeedsService = pendingClarification === null && isPriceFaqMissingService(aiOutput);
 
-      if (slotChoiceDecision !== null && !isActiveHoldTerminalPolicyDecision(policyDecision, bookingContext)) {
-        policyDecision = slotChoiceDecision;
-        debug.slot_choice_resolution = slotChoiceDecision.slot_choice_resolution;
-      }
+      if (pendingPriceNeedsService || newPriceNeedsService) {
+        const policyDecision: RuntimePolicyDecision = {
+          next_action: 'clarify_faq_service_interest',
+          should_call_booking: false,
+          booking_request: null,
+          reason: pendingPriceNeedsService ? 'pending_price_faq_missing_service_interest' : 'price_faq_missing_service_interest',
+          warnings: [],
+          reply_text: runtimeReplyTemplate(responseLanguage, 'faq_price_missing'),
+        };
+        policyDecisionForReply = policyDecision;
+        debug.policy_decision = policyDecision;
+        conversationMode = 'faq_price';
+        replyText = runtimeReplyTemplate(responseLanguage, 'faq_price_missing');
+        replySource = 'policy';
+        debug.conversation_mode = conversationMode;
+        debug.reply_source = replySource;
+        await this.persistPendingPriceFaqClarification({
+          convoState,
+          clinicId: clinic.id,
+          contactId: contact.id,
+          traceId: pendingClarification?.trace_id ?? traceId,
+          createdAt: pendingClarification?.created_at ?? turnStartedAt.toISOString(),
+          debug,
+        });
+      } else {
+        let policyDecision = decideRuntimeAction({
+          ai_output: aiOutput,
+          case_context: caseContext,
+          booking_context: bookingContext,
+          clinic,
+          contact_id: contact.id,
+          channel: input.channel,
+          meta: input.meta,
+          trace_id: traceId,
+          current_time_iso: turnStartedAt.toISOString(),
+          current_clinic_date_iso: currentDateIso,
+        });
 
-      policyDecisionForReply = policyDecision;
-      debug.policy_decision = policyDecision;
+        const slotChoiceDecision = buildSlotChoicePolicyDecision({
+          aiOutput,
+          convoState,
+          clinic,
+          contactId: contact.id,
+          caseId: caseContext.current_case_id,
+          channel: input.channel,
+          meta: input.meta,
+          traceId,
+          responseLanguage,
+          currentTimeIso: turnStartedAt.toISOString(),
+        });
 
-      if (policyDecision.should_call_booking && policyDecision.booking_request !== null && this.bookingApplyService !== undefined) {
-        debug.booking_request = policyDecision.booking_request;
+        if (slotChoiceDecision !== null && !isActiveHoldTerminalPolicyDecision(policyDecision, bookingContext)) {
+          policyDecision = slotChoiceDecision;
+          debug.slot_choice_resolution = slotChoiceDecision.slot_choice_resolution;
+        }
 
-        try {
-          bookingResult = await this.bookingApplyService.apply(policyDecision.booking_request);
-          debug.booking_result = bookingResult;
-          await this.persistRuntimeSlotMemory({
-            convoState,
-            clinicId: clinic.id,
-            contactId: contact.id,
-            bookingResult,
-            bookingRequest: policyDecision.booking_request,
-            traceId,
-            createdAt: turnStartedAt.toISOString(),
-            debug,
-          });
+        policyDecisionForReply = policyDecision;
+        debug.policy_decision = policyDecision;
+
+        if (policyDecision.should_call_booking && policyDecision.booking_request !== null && this.bookingApplyService !== undefined) {
+          debug.booking_request = policyDecision.booking_request;
+
+          try {
+            bookingResult = await this.bookingApplyService.apply(policyDecision.booking_request);
+            debug.booking_result = bookingResult;
+            await this.persistRuntimeSlotMemory({
+              convoState,
+              clinicId: clinic.id,
+              contactId: contact.id,
+              bookingResult,
+              bookingRequest: policyDecision.booking_request,
+              traceId,
+              createdAt: turnStartedAt.toISOString(),
+              debug,
+            });
+            conversationMode = classifyRuntimeConversationMode({
+              ai_output: aiOutput,
+              booking_result: bookingResult,
+              policy_decision: policyDecision,
+              case_context: caseContext,
+              booking_context: bookingContext,
+            });
+            const replyDecision = buildRuntimeReplyBehavior({
+              conversation_mode: conversationMode,
+              booking_result: bookingResult,
+              policy_decision: policyDecision,
+              case_context: caseContext,
+              booking_context: bookingContext,
+              clinic,
+              ai_output: aiOutput,
+              channel: input.channel,
+              knowledge_result: knowledgeResult,
+              knowledge_reply_text: knowledgeReplyText,
+              response_language: responseLanguage,
+            });
+            replyText = replyDecision.reply_text;
+            replySource = replyDecision.reply_source;
+            replySideEffects = replyDecision.side_effects;
+            debug.conversation_mode = conversationMode;
+            debug.reply_source = replySource;
+          } catch (error) {
+            debug.booking_error = formatBookingApplyError(error);
+            replySource = 'booking_error';
+            debug.reply_source = replySource;
+            replyText = runtimeReplyTemplate(responseLanguage, 'booking_error');
+          }
+        } else if (policyDecision.should_call_booking && this.bookingApplyService === undefined) {
+          replySource = 'safe_fallback';
+          debug.reply_source = replySource;
+          debug.booking_request = policyDecision.booking_request;
+          debug.booking_error = { code: 'booking_apply_service_unavailable' };
+          replyText = runtimeReplyTemplate(responseLanguage, 'safe_fallback');
+        } else {
           conversationMode = classifyRuntimeConversationMode({
             ai_output: aiOutput,
             booking_result: bookingResult,
             policy_decision: policyDecision,
             case_context: caseContext,
             booking_context: bookingContext,
+          });
+          knowledgeResult = await this.retrieveKnowledgeForReply({
+            aiOutput,
+            clinicId: clinic.id,
+            userText: input.text,
+            language: responseLanguage,
+            conversationMode,
+            traceId,
+            debug,
+          });
+          knowledgeReplyText = await this.composeKnowledgeReply({
+            knowledgeResult,
+            responseLanguage,
+            traceId,
+            debug,
           });
           const replyDecision = buildRuntimeReplyBehavior({
             conversation_mode: conversationMode,
@@ -487,59 +577,18 @@ export class RuntimeTurnService {
           replySideEffects = replyDecision.side_effects;
           debug.conversation_mode = conversationMode;
           debug.reply_source = replySource;
-        } catch (error) {
-          debug.booking_error = formatBookingApplyError(error);
-          replySource = 'booking_error';
-          debug.reply_source = replySource;
-          replyText = runtimeReplyTemplate(responseLanguage, 'booking_error');
         }
-      } else if (policyDecision.should_call_booking && this.bookingApplyService === undefined) {
-        replySource = 'safe_fallback';
-        debug.reply_source = replySource;
-        debug.booking_request = policyDecision.booking_request;
-        debug.booking_error = { code: 'booking_apply_service_unavailable' };
-        replyText = runtimeReplyTemplate(responseLanguage, 'safe_fallback');
-      } else {
-        conversationMode = classifyRuntimeConversationMode({
-          ai_output: aiOutput,
-          booking_result: bookingResult,
-          policy_decision: policyDecision,
-          case_context: caseContext,
-          booking_context: bookingContext,
-        });
-        knowledgeResult = await this.retrieveKnowledgeForReply({
-          aiOutput,
-          clinicId: clinic.id,
-          userText: input.text,
-          language: responseLanguage,
-          conversationMode,
-          traceId,
-          debug,
-        });
-        knowledgeReplyText = await this.composeKnowledgeReply({
-          knowledgeResult,
-          responseLanguage,
-          traceId,
-          debug,
-        });
-        const replyDecision = buildRuntimeReplyBehavior({
-          conversation_mode: conversationMode,
-          booking_result: bookingResult,
-          policy_decision: policyDecision,
-          case_context: caseContext,
-          booking_context: bookingContext,
-          clinic,
-          ai_output: aiOutput,
-          channel: input.channel,
-          knowledge_result: knowledgeResult,
-          knowledge_reply_text: knowledgeReplyText,
-          response_language: responseLanguage,
-        });
-        replyText = replyDecision.reply_text;
-        replySource = replyDecision.reply_source;
-        replySideEffects = replyDecision.side_effects;
-        debug.conversation_mode = conversationMode;
-        debug.reply_source = replySource;
+
+        if (pendingClarification !== null && serviceInterest !== null) {
+          await this.clearPendingPriceFaqClarification({
+            convoState,
+            clinicId: clinic.id,
+            contactId: contact.id,
+            traceId,
+            clearedAt: turnStartedAt.toISOString(),
+            debug,
+          });
+        }
       }
     } catch (error) {
       debug.ai_error = formatRuntimeAIError(error);
@@ -631,6 +680,83 @@ export class RuntimeTurnService {
       side_effects: sideEffects,
       debug,
     };
+  }
+
+
+  private async persistPendingPriceFaqClarification(input: {
+    convoState: RuntimeConvoStateRecord;
+    clinicId: string;
+    contactId: string;
+    traceId: string;
+    createdAt: string;
+    debug: Record<string, unknown>;
+  }): Promise<void> {
+    const pendingClarification: RuntimePendingClarification = {
+      type: 'faq',
+      faq_topic: 'price',
+      missing_slot: 'service_interest',
+      created_at: input.createdAt,
+      trace_id: input.traceId,
+    };
+    const nextState = {
+      ...input.convoState.state,
+      runtime: {
+        ...readRecord(input.convoState.state.runtime),
+        pending_clarification: pendingClarification,
+      },
+    };
+
+    try {
+      const saved = await this.repository.saveConvoState({
+        clinicId: input.clinicId,
+        contactId: input.contactId,
+        state: nextState,
+      });
+      input.convoState.state = saved.state;
+      input.convoState.stateVersion = saved.stateVersion;
+      input.debug.runtime_state_saved = {
+        ...readRecord(input.debug.runtime_state_saved),
+        pending_clarification: pendingClarification,
+      };
+    } catch (error) {
+      input.debug.runtime_state_save_error = formatOutboundPersistenceError(error);
+    }
+  }
+
+  private async clearPendingPriceFaqClarification(input: {
+    convoState: RuntimeConvoStateRecord;
+    clinicId: string;
+    contactId: string;
+    traceId: string;
+    clearedAt: string;
+    debug: Record<string, unknown>;
+  }): Promise<void> {
+    const runtimeState = { ...readRecord(input.convoState.state.runtime) };
+    delete runtimeState.pending_clarification;
+    runtimeState.pending_clarification_cleared_trace_id = input.traceId;
+    runtimeState.pending_clarification_cleared_at = input.clearedAt;
+
+    const nextState = {
+      ...input.convoState.state,
+      runtime: runtimeState,
+    };
+
+    try {
+      const saved = await this.repository.saveConvoState({
+        clinicId: input.clinicId,
+        contactId: input.contactId,
+        state: nextState,
+      });
+      input.convoState.state = saved.state;
+      input.convoState.stateVersion = saved.stateVersion;
+      input.debug.runtime_state_saved = {
+        ...readRecord(input.debug.runtime_state_saved),
+        pending_clarification: null,
+        pending_clarification_cleared: true,
+      };
+    } catch (error) {
+      input.debug.runtime_state_save_error = formatOutboundPersistenceError(error);
+    }
   }
 
 
@@ -874,6 +1000,76 @@ export class RuntimeTurnService {
   }
 }
 
+
+
+interface RuntimePendingClarification {
+  type: 'faq';
+  faq_topic: 'price';
+  missing_slot: 'service_interest';
+  created_at: string;
+  trace_id: string;
+}
+
+function readPendingPriceFaqClarification(state: Record<string, unknown>): RuntimePendingClarification | null {
+  const runtimeState = readRecord(state.runtime);
+  const pending = readRecord(runtimeState.pending_clarification);
+
+  if (pending.type !== 'faq' || pending.faq_topic !== 'price' || pending.missing_slot !== 'service_interest') {
+    return null;
+  }
+
+  const createdAt = readString(pending.created_at);
+  const traceId = readString(pending.trace_id);
+
+  if (createdAt === null || traceId === null) {
+    return null;
+  }
+
+  return {
+    type: 'faq',
+    faq_topic: 'price',
+    missing_slot: 'service_interest',
+    created_at: createdAt,
+    trace_id: traceId,
+  };
+}
+
+function isPriceFaqMissingService(aiOutput: RuntimeAIOutput): boolean {
+  if (aiOutput.faq_topic !== 'price' || readString(aiOutput.slot_updates.service_interest) !== null) {
+    return false;
+  }
+
+  return aiOutput.conversation_intent !== 'availability_request'
+    && aiOutput.requested_action !== 'check_availability'
+    && aiOutput.requested_action !== 'propose_slot';
+}
+
+function forcePriceFaqCompletion(aiOutput: RuntimeAIOutput): RuntimeAIOutput {
+  return {
+    ...aiOutput,
+    conversation_intent: 'faq',
+    requested_action: 'answer_faq',
+    faq_topic: 'price',
+    availability_query: {
+      search_type: 'unknown',
+      date_iso: null,
+      weekday: null,
+      relative_day: null,
+      time_window: null,
+      exact_time: null,
+      flexibility: 'unknown',
+    },
+    booking: {
+      ...aiOutput.booking,
+      preferred_date_iso: null,
+      preferred_weekday: null,
+      time_of_day: null,
+      patient_confirmed_proposed_slot: false,
+      patient_rejected_proposed_slot: false,
+      selected_hold_id: null,
+    },
+  };
+}
 
 
 function shouldConsumeRuntimeSlotMemory(bookingRequest: BookingApplyRequest, bookingResult: BookingApplyResponse): boolean {
