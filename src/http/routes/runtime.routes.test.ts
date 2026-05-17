@@ -1375,6 +1375,134 @@ describe('runtime routes', () => {
     }
   });
 
+
+  it('normalizes missing exact_slot date from numeric day-month text and returns past-date policy reply', async () => {
+    const repository = new FakeRuntimeTurnRepository({ cases: [makeCase()] });
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'booking',
+      requested_action: 'clarify',
+      confidence: 'low',
+      reply_draft: 'Подскажите, пожалуйста, чем можем помочь — записью или вопросом по клинике?',
+      availability_query: availabilityQuery({ search_type: 'exact_slot', date_iso: null, exact_time: '08:00', flexibility: 'specific' }),
+      slot_updates: { service_interest: 'консультация стоматолога' },
+    }));
+    const bookingApplyService = new FakeBookingApplyService(awaitingConfirmationResponse());
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, { runtimeTurnService: new RuntimeTurnService(repository, aiClient, bookingApplyService, () => new Date('2026-05-17T10:00:00.000Z')) });
+
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/runtime/turn',
+        payload: { ...validPayload, text: 'Хочу записаться на консультацию стоматолога 16.05 на 08:00', meta: { ...validPayload.meta, language_code: 'ru' } },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        booking_result: null,
+        reply_text: 'Эта дата уже прошла. Напишите, пожалуйста, будущую дату и время.',
+        debug: {
+          ai_output: { availability_query: { date_iso: '2026-05-16', exact_time: '08:00' } },
+          date_normalization: { source: 'user_text_explicit_date', after: { availability_date_iso: '2026-05-16' } },
+          reply_source: 'policy',
+          policy_decision: { next_action: 'ask_preferred_datetime', should_call_booking: false, reason: 'exact_slot_date_in_past' },
+        },
+      });
+      expect(bookingApplyService.calls).toEqual([]);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('normalizes future numeric day-month exact_slot text and calls booking propose_slot', async () => {
+    const repository = new FakeRuntimeTurnRepository({ cases: [makeCase()] });
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'booking',
+      requested_action: 'clarify',
+      availability_query: availabilityQuery({ search_type: 'exact_slot', date_iso: null, exact_time: '08:00', flexibility: 'specific' }),
+      slot_updates: { service_interest: 'консультация стоматолога' },
+    }));
+    const bookingApplyService = new FakeBookingApplyService(awaitingConfirmationResponse());
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, { runtimeTurnService: new RuntimeTurnService(repository, aiClient, bookingApplyService, () => new Date('2026-05-17T10:00:00.000Z')) });
+
+    try {
+      const response = await app.inject({ method: 'POST', url: '/runtime/turn', payload: { ...validPayload, text: 'Хочу записаться на консультацию стоматолога 23.05 на 08:00' } });
+
+      expect(response.statusCode).toBe(200);
+      expect(bookingApplyService.calls).toHaveLength(1);
+      expect(bookingApplyService.calls[0]).toMatchObject({
+        bookingAction: 'propose_slot',
+        serviceInterest: 'консультация стоматолога',
+        preferredDateIso: '2026-05-23',
+        exactTime: '08:00',
+      });
+      expect(response.json()).toMatchObject({
+        booking_result: { booking_status: 'awaiting_patient_confirmation' },
+        debug: { ai_output: { availability_query: { date_iso: '2026-05-23', exact_time: '08:00' } }, policy_decision: { reason: 'availability_exact_slot' } },
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('ignores invalid numeric day-month exact_slot text and keeps existing missing-date clarification', async () => {
+    const repository = new FakeRuntimeTurnRepository({ cases: [makeCase()] });
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'booking',
+      requested_action: 'clarify',
+      availability_query: availabilityQuery({ search_type: 'exact_slot', date_iso: null, exact_time: '08:00', flexibility: 'specific' }),
+      slot_updates: { service_interest: 'консультация стоматолога' },
+    }));
+    const bookingApplyService = new FakeBookingApplyService(awaitingConfirmationResponse());
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, { runtimeTurnService: new RuntimeTurnService(repository, aiClient, bookingApplyService, () => new Date('2026-05-17T10:00:00.000Z')) });
+
+    try {
+      const response = await app.inject({ method: 'POST', url: '/runtime/turn', payload: { ...validPayload, text: 'Хочу записаться на консультацию стоматолога 32.05 на 08:00' } });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        booking_result: null,
+        debug: {
+          ai_output: { availability_query: { date_iso: null, exact_time: '08:00' } },
+          date_normalization: { source: 'none', after: { availability_date_iso: null } },
+          reply_source: 'policy',
+          policy_decision: { should_call_booking: false, reason: 'exact_slot_missing_date' },
+        },
+      });
+      expect(bookingApplyService.calls).toEqual([]);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('normalizes yearful numeric exact_slot text with missing AI date', async () => {
+    const repository = new FakeRuntimeTurnRepository({ cases: [makeCase()] });
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'booking',
+      requested_action: 'clarify',
+      availability_query: availabilityQuery({ search_type: 'exact_slot', date_iso: null, exact_time: '08:00', flexibility: 'specific' }),
+      slot_updates: { service_interest: 'консультация стоматолога' },
+    }));
+    const bookingApplyService = new FakeBookingApplyService(awaitingConfirmationResponse());
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, { runtimeTurnService: new RuntimeTurnService(repository, aiClient, bookingApplyService, () => new Date('2026-05-17T10:00:00.000Z')) });
+
+    try {
+      const response = await app.inject({ method: 'POST', url: '/runtime/turn', payload: { ...validPayload, text: 'Хочу записаться на консультацию стоматолога 16.05.2026 на 08:00', meta: { ...validPayload.meta, language_code: 'ru' } } });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        reply_text: 'Эта дата уже прошла. Напишите, пожалуйста, будущую дату и время.',
+        debug: { ai_output: { availability_query: { date_iso: '2026-05-16', exact_time: '08:00' } }, policy_decision: { reason: 'exact_slot_date_in_past' } },
+      });
+      expect(bookingApplyService.calls).toEqual([]);
+    } finally {
+      await app.close();
+    }
+  });
+
   it('does not call booking for past specific date when AI requested_action is check_availability', async () => {
     const repository = new FakeRuntimeTurnRepository({ cases: [makeCase({ collected: { service_interest: 'консультация' } })] });
     const aiClient = new FakeRuntimeAIClient(validAIOutput({

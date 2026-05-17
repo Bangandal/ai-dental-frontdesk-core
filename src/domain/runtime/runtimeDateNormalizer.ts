@@ -8,11 +8,15 @@ export interface RuntimeDateNormalizationDebug {
     preferred_weekday: string | null;
     time_of_day: RuntimeAIOutput['booking']['time_of_day'];
     preferred_time: string | null;
+    availability_date_iso: string | null | undefined;
+    availability_exact_time: string | null | undefined;
   };
   after: {
     preferred_date_iso: string | null;
     preferred_weekday: string | null;
     time_of_day: RuntimeAIOutput['booking']['time_of_day'];
+    availability_date_iso: string | null | undefined;
+    availability_exact_time: string | null | undefined;
   };
   source: RuntimeDateNormalizationSource;
   warnings: string[];
@@ -39,11 +43,14 @@ export function normalizeRuntimeAIOutputDates(input: NormalizeRuntimeAIOutputDat
     preferred_weekday: original.booking.preferred_weekday,
     time_of_day: original.booking.time_of_day,
     preferred_time: original.slot_updates.preferred_time,
+    availability_date_iso: original.availability_query?.date_iso,
+    availability_exact_time: original.availability_query?.exact_time,
   };
   const warnings: string[] = [];
   const normalized: RuntimeAIOutput = {
     ...original,
     slot_updates: { ...original.slot_updates },
+    availability_query: original.availability_query === null ? null : { ...original.availability_query },
     booking: { ...original.booking },
   };
 
@@ -58,6 +65,10 @@ export function normalizeRuntimeAIOutputDates(input: NormalizeRuntimeAIOutputDat
 
   let source: RuntimeDateNormalizationSource = 'none';
 
+  const explicitDateIso = shouldExtractExplicitDate(normalized)
+    ? extractExplicitDate(input.user_text, input.current_date_iso)
+    : null;
+
   if (isValidDateIso(normalized.booking.preferred_date_iso)) {
     source = 'ai';
   } else {
@@ -65,10 +76,23 @@ export function normalizeRuntimeAIOutputDates(input: NormalizeRuntimeAIOutputDat
       warnings.push(`preferred_date_iso_invalid:${normalized.booking.preferred_date_iso}`);
     }
 
-    normalized.booking.preferred_date_iso = extractExplicitDate(input.user_text, input.current_date_iso);
+    normalized.booking.preferred_date_iso = explicitDateIso;
 
     if (normalized.booking.preferred_date_iso !== null) {
       source = 'user_text_explicit_date';
+    }
+  }
+
+  if (normalized.availability_query !== null) {
+    if (isValidDateIso(normalized.availability_query.date_iso)) {
+      if (source === 'none') {
+        source = 'ai';
+      }
+    } else if (normalized.availability_query.date_iso !== null) {
+      warnings.push(`availability_date_iso_invalid:${normalized.availability_query.date_iso}`);
+    } else if (explicitDateIso !== null && shouldFillAvailabilityDate(normalized)) {
+      normalized.availability_query.date_iso = explicitDateIso;
+      source = source === 'ai' ? source : 'user_text_explicit_date';
     }
   }
 
@@ -78,6 +102,8 @@ export function normalizeRuntimeAIOutputDates(input: NormalizeRuntimeAIOutputDat
       preferred_date_iso: normalized.booking.preferred_date_iso,
       preferred_weekday: normalized.booking.preferred_weekday,
       time_of_day: normalized.booking.time_of_day,
+      availability_date_iso: normalized.availability_query?.date_iso,
+      availability_exact_time: normalized.availability_query?.exact_time,
     },
     source,
     warnings,
@@ -125,6 +151,38 @@ function readPart(parts: Intl.DateTimeFormatPart[], type: Intl.DateTimeFormatPar
   return parts.find((part) => part.type === type)?.value ?? '00';
 }
 
+
+function shouldExtractExplicitDate(aiOutput: RuntimeAIOutput): boolean {
+  return hasBookingOrAvailabilityContext(aiOutput)
+    && (hasExactAvailabilityTime(aiOutput) || aiOutput.conversation_intent === 'booking' || aiOutput.conversation_intent === 'availability_request');
+}
+
+function shouldFillAvailabilityDate(aiOutput: RuntimeAIOutput): boolean {
+  return aiOutput.availability_query !== null
+    && aiOutput.availability_query.date_iso === null
+    && hasBookingOrAvailabilityContext(aiOutput)
+    && (hasExactAvailabilityTime(aiOutput) || aiOutput.conversation_intent === 'booking' || aiOutput.conversation_intent === 'availability_request');
+}
+
+function hasBookingOrAvailabilityContext(aiOutput: RuntimeAIOutput): boolean {
+  return aiOutput.conversation_intent === 'booking'
+    || aiOutput.conversation_intent === 'availability_request'
+    || aiOutput.requested_action === 'ask_slot'
+    || aiOutput.requested_action === 'check_availability'
+    || aiOutput.requested_action === 'propose_slot'
+    || aiOutput.requested_action === 'await_confirmation'
+    || aiOutput.requested_action === 'create_appointment'
+    || isTypedAvailabilityQuery(aiOutput.availability_query);
+}
+
+function isTypedAvailabilityQuery(query: RuntimeAIOutput['availability_query']): boolean {
+  return query !== null && query.search_type !== 'unknown';
+}
+
+function hasExactAvailabilityTime(aiOutput: RuntimeAIOutput): boolean {
+  return readNonEmpty(aiOutput.availability_query?.exact_time) !== undefined;
+}
+
 function extractExplicitDate(userText: string, currentDateIso: string): string | null {
   return extractIsoDate(userText)
     ?? extractExplicitDayMonthYear(userText)
@@ -145,7 +203,7 @@ function extractIsoDate(userText: string): string | null {
 }
 
 function extractExplicitDayMonthYear(userText: string): string | null {
-  const pattern = /(?:^|[^\d])(\d{1,2})\.(\d{1,2})\.(\d{4})(?!\d)/u;
+  const pattern = /(?:^|[^\d])(\d{1,2})([./-])(\d{1,2})\2(\d{4})(?!\d)/u;
   const match = pattern.exec(userText);
 
   if (match === null) {
@@ -153,15 +211,15 @@ function extractExplicitDayMonthYear(userText: string): string | null {
   }
 
   const day = Number.parseInt(match[1] ?? '', 10);
-  const month = Number.parseInt(match[2] ?? '', 10);
-  const year = Number.parseInt(match[3] ?? '', 10);
+  const month = Number.parseInt(match[3] ?? '', 10);
+  const year = Number.parseInt(match[4] ?? '', 10);
   const candidate = formatDateIso(year, month, day);
 
   return isValidDateIso(candidate) ? candidate : null;
 }
 
 function extractExplicitDayMonth(userText: string, currentDateIso: string): string | null {
-  const pattern = /(?:^|[^\d])(\d{1,2})\.(\d{1,2})(?![.\d])/gu;
+  const pattern = /(?:^|[^\d])(\d{1,2})([./-])(\d{1,2})(?![./-]?\d)/gu;
   const current = parseDateIsoParts(currentDateIso);
 
   if (current === null) {
@@ -170,7 +228,7 @@ function extractExplicitDayMonth(userText: string, currentDateIso: string): stri
 
   for (const match of userText.matchAll(pattern)) {
     const day = Number.parseInt(match[1] ?? '', 10);
-    const month = Number.parseInt(match[2] ?? '', 10);
+    const month = Number.parseInt(match[3] ?? '', 10);
     const resolved = resolveDayMonth(current, day, month);
 
     if (resolved !== null) {
@@ -186,25 +244,13 @@ function resolveDayMonth(current: { year: number; month: number; day: number }, 
     return null;
   }
 
-  let year = current.year;
+  const year = current.year;
 
   if (day > daysInMonth(year, month)) {
     return null;
   }
 
-  let candidate = formatDateIso(year, month, day);
-
-  if (candidate < formatDateIso(current.year, current.month, current.day)) {
-    year += 1;
-
-    if (day > daysInMonth(year, month)) {
-      return null;
-    }
-
-    candidate = formatDateIso(year, month, day);
-  }
-
-  return candidate;
+  return formatDateIso(year, month, day);
 }
 
 function parseDateIsoParts(value: string | null): { year: number; month: number; day: number } | null {
