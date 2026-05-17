@@ -40,6 +40,12 @@ export class NoopRuntimeAIClient implements RuntimeAIClient {
         exact_time: null,
         flexibility: 'unknown',
       },
+      slot_selection: {
+        selected_option_id: null,
+        selected_start_at: null,
+        selected_time: null,
+        selection_confidence: 'unknown',
+      },
       booking: {
         preferred_date_iso: null,
         preferred_weekday: null,

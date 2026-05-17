@@ -8,7 +8,7 @@ import type {
   ExternalAppointmentRecord,
 } from '../appointments/appointmentRepository.js';
 
-export type BookingAction = 'none' | 'propose_slot' | 'confirm_slot' | 'cancel_hold';
+export type BookingAction = 'none' | 'propose_slot' | 'propose_options' | 'confirm_slot' | 'cancel_hold';
 export type TimeOfDay = 'morning' | 'afternoon' | 'evening' | 'any';
 
 export interface PreferredTimeWindow {
@@ -28,6 +28,9 @@ export interface BookingApplyRequest {
   preferredTimeWindow?: PreferredTimeWindow;
   exactTime?: string | null;
   activeHoldId?: string | null;
+  selectedSlotStartAt?: string | null;
+  selectedSlotEndAt?: string | null;
+  selectedSlotProviderMetadata?: Record<string, unknown> | null;
   patientName?: string | null;
   channel?: string | null;
   traceId?: string | null;
@@ -38,6 +41,7 @@ export interface BookingApplyRequest {
 export type BookingApplyResponse =
   | NoBookingActionResponse
   | ProposedSlotResponse
+  | ProposedOptionsResponse
   | NoSlotsResponse
   | ConfirmedSlotResponse
   | BookingFailureResponse;
@@ -60,14 +64,23 @@ export interface ProposedSlotResponse {
   reason: 'slot_proposed';
 }
 
+export interface ProposedOptionsResponse {
+  booking_action: 'propose_options';
+  booking_status: 'awaiting_slot_choice';
+  proposed_slot: null;
+  proposed_slots: BookingSlotPayload[];
+  should_notify_admin: false;
+  reason: 'slot_options_available';
+}
+
 export interface NoSlotsResponse {
-  booking_action: 'propose_slot';
+  booking_action: 'propose_slot' | 'propose_options';
   booking_status: 'no_slots';
   proposed_slot: null;
   proposed_slots: [];
   should_notify_admin: false;
   reply_text_override: string;
-  reason: 'no_slots_available';
+  reason: 'no_slots_available' | 'stale_slot_unavailable';
 }
 
 export interface ConfirmedSlotResponse {
@@ -98,6 +111,8 @@ export interface BookingSlotPayload {
   cell_range: string | null;
   sheet_name: string | null;
   service_interest: string | null;
+  option_id?: string;
+  provider_metadata?: Record<string, unknown>;
 }
 
 export interface BookingAppointmentPayload extends BookingSlotPayload {
@@ -125,6 +140,10 @@ export class BookingApplyService {
       };
     }
 
+    if (request.bookingAction === 'propose_options') {
+      return this.proposeOptions(request);
+    }
+
     if (request.bookingAction === 'propose_slot') {
       return this.proposeSlot(request);
     }
@@ -144,26 +163,33 @@ export class BookingApplyService {
     };
   }
 
-  private async proposeSlot(request: BookingApplyRequest): Promise<ProposedSlotResponse | NoSlotsResponse> {
-    const availability = await this.appointmentLifecycle.checkAvailability({
-      clinicId: request.clinicId,
-      ...buildAvailabilityRange(request.preferredDateIso),
-      durationMinutes: request.durationMinutes,
-      service: request.serviceInterest ?? undefined,
-    });
+  private async proposeOptions(request: BookingApplyRequest): Promise<ProposedOptionsResponse | NoSlotsResponse> {
+    const candidateSlots = await this.findCandidateSlots(request);
 
-    if (!availability.ok) {
-      return noSlotsResponse();
+    if (candidateSlots.length === 0) {
+      return noSlotsResponse('propose_options');
     }
 
-    const candidateSlots = availability.data.slots.filter((slot) => (
-      isSlotInRequestedTimeOfDay(slot, request.timeOfDay)
-      && isSlotInRequestedTimeConstraints(slot, request)
-    ));
-    const selectedSlot = candidateSlots[0];
+    return {
+      booking_action: 'propose_options',
+      booking_status: 'awaiting_slot_choice',
+      proposed_slot: null,
+      proposed_slots: candidateSlots.slice(0, 3).map((slot, index) => ({
+        ...toBookingSlotPayload(slot, request.serviceInterest ?? null),
+        option_id: String(index + 1),
+        provider_metadata: slot.metadata,
+      })),
+      should_notify_admin: false,
+      reason: 'slot_options_available',
+    };
+  }
+
+  private async proposeSlot(request: BookingApplyRequest): Promise<ProposedSlotResponse | NoSlotsResponse> {
+    const candidateSlots = await this.findCandidateSlots(request);
+    const selectedSlot = selectSlotForHold(candidateSlots, request);
 
     if (selectedSlot === undefined) {
-      return noSlotsResponse();
+      return noSlotsResponse('propose_slot', request.selectedSlotStartAt === undefined || request.selectedSlotStartAt === null ? 'no_slots_available' : 'stale_slot_unavailable');
     }
 
     const dedupeKey = buildDedupeKey(request, selectedSlot);
@@ -178,7 +204,7 @@ export class BookingApplyService {
     });
 
     if (!hold.ok) {
-      return noSlotsResponse();
+      return noSlotsResponse('propose_slot');
     }
 
     const proposedSlot = toBookingSlotPayload(selectedSlot, request.serviceInterest ?? null);
@@ -194,6 +220,25 @@ export class BookingApplyService {
       should_notify_admin: false,
       reason: 'slot_proposed',
     };
+  }
+
+
+  private async findCandidateSlots(request: BookingApplyRequest): Promise<ScheduleSlot[]> {
+    const availability = await this.appointmentLifecycle.checkAvailability({
+      clinicId: request.clinicId,
+      ...buildAvailabilityRange(request.preferredDateIso),
+      durationMinutes: request.durationMinutes,
+      service: request.serviceInterest ?? undefined,
+    });
+
+    if (!availability.ok) {
+      return [];
+    }
+
+    return availability.data.slots.filter((slot) => (
+      isSlotInRequestedTimeOfDay(slot, request.timeOfDay)
+      && isSlotInRequestedTimeConstraints(slot, request)
+    ));
   }
 
   private async confirmSlot(request: BookingApplyRequest): Promise<ConfirmedSlotResponse | BookingFailureResponse> {
@@ -245,15 +290,27 @@ export class BookingApplyService {
   }
 }
 
-function noSlotsResponse(): NoSlotsResponse {
+
+function selectSlotForHold(candidateSlots: ScheduleSlot[], request: BookingApplyRequest): ScheduleSlot | undefined {
+  if (request.selectedSlotStartAt === null || request.selectedSlotStartAt === undefined) {
+    return candidateSlots[0];
+  }
+
+  return candidateSlots.find((slot) => (
+    slot.startAt === request.selectedSlotStartAt
+    && (request.selectedSlotEndAt === null || request.selectedSlotEndAt === undefined || slot.endAt === request.selectedSlotEndAt)
+  ));
+}
+
+function noSlotsResponse(bookingAction: 'propose_slot' | 'propose_options' = 'propose_slot', reason: 'no_slots_available' | 'stale_slot_unavailable' = 'no_slots_available'): NoSlotsResponse {
   return {
-    booking_action: 'propose_slot',
+    booking_action: bookingAction,
     booking_status: 'no_slots',
     proposed_slot: null,
     proposed_slots: [],
     should_notify_admin: false,
     reply_text_override: noSlotsReply,
-    reason: 'no_slots_available',
+    reason,
   };
 }
 

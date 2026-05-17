@@ -4,7 +4,7 @@ import type { RuntimeBookingContext, RuntimeCaseContext, RuntimeClinicRecord } f
 import { resolveRuntimeReplyLanguage } from './runtimeReplyLanguage.js';
 import { runtimeReplyTemplate } from './runtimeReplyTemplates.js';
 
-export type RuntimeAvailabilityBookingAction = 'propose_slot' | 'confirm_slot' | 'cancel_hold';
+export type RuntimeAvailabilityBookingAction = 'propose_options' | 'propose_slot' | 'confirm_slot' | 'cancel_hold';
 
 export interface RuntimeAvailabilityPlannerInput {
   ai_output: RuntimeAIOutput;
@@ -121,14 +121,16 @@ export function planRuntimeAvailability(input: RuntimeAvailabilityPlannerInput):
     );
   }
 
+  const bookingAction = effectiveSearchType === 'exact_slot' ? 'propose_slot' : 'propose_options';
+
   return {
     should_call_booking: true,
-    booking_action: 'propose_slot',
+    booking_action: bookingAction,
     booking_request: {
       clinicId: input.clinic.id,
       contactId: input.contact_id,
       caseId: input.case_context.current_case_id,
-      bookingAction: 'propose_slot',
+      bookingAction,
       serviceInterest,
       preferredDateIso,
       preferredWeekday: effectiveQuery.weekday,
@@ -140,7 +142,7 @@ export function planRuntimeAvailability(input: RuntimeAvailabilityPlannerInput):
       channel: input.channel,
       traceId: input.trace_id,
       durationMinutes: 30,
-      metadata: buildPlannerMetadata(input, effectiveQuery, usingFallback, preferredDateIso),
+      metadata: buildPlannerMetadata(input, effectiveQuery, usingFallback, preferredDateIso, bookingAction),
     },
     reason: buildReason(effectiveSearchType, usingFallback),
     warnings,
@@ -352,10 +354,11 @@ function buildPlannerMetadata(
   query: AvailabilityQuery,
   usedFallback: boolean,
   resolvedDateIso: string | null,
+  bookingAction: 'propose_options' | 'propose_slot',
 ): Record<string, unknown> {
   return {
     source: 'runtime_availability_planner',
-    policy_action: 'propose_slot',
+    policy_action: bookingAction,
     clinic_timezone: input.clinic.timezone,
     current_time_iso: input.current_time_iso ?? null,
     current_clinic_date_iso: input.current_clinic_date_iso,

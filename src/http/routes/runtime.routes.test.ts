@@ -12,6 +12,7 @@ import type {
   RuntimeTurnRepository,
   SaveInboundUserMessageInput,
   SaveOutboundAssistantMessageInput,
+  SaveRuntimeStateInput,
 } from '../../domain/runtime/runtimeTurnService.js';
 import {
   NoopRuntimeAIClient,
@@ -131,6 +132,12 @@ describe('runtime routes', () => {
               },
               exact_time: 'HH:mm|null',
               flexibility: 'specific|flexible|nearest|unknown',
+            },
+            slot_selection: {
+              selected_option_id: 'string|null',
+              selected_start_at: 'ISO datetime string|null',
+              selected_time: 'HH:mm|null',
+              selection_confidence: 'high|medium|low|unknown',
             },
             booking: {
               preferred_date_iso: 'string|null',
@@ -796,7 +803,7 @@ describe('runtime routes', () => {
         clinicId: '11111111-1111-1111-1111-111111111111',
         contactId: '22222222-2222-2222-2222-222222222222',
         caseId: '55555555-5555-5555-5555-555555555555',
-        bookingAction: 'propose_slot',
+        bookingAction: 'propose_options',
         serviceInterest: 'консультация',
         preferredDateIso: '2026-05-18',
         timeOfDay: 'morning',
@@ -859,7 +866,7 @@ describe('runtime routes', () => {
       expect(response.statusCode).toBe(200);
       expect(bookingApplyService.calls).toHaveLength(1);
       expect(bookingApplyService.calls[0]).toMatchObject({
-        bookingAction: 'propose_slot',
+        bookingAction: 'propose_options',
         preferredDateIso: '2026-05-12',
         preferredWeekday: null,
         timeOfDay: 'any',
@@ -1132,7 +1139,7 @@ describe('runtime routes', () => {
       expect(response.statusCode).toBe(200);
       expect(bookingApplyService.calls).toHaveLength(1);
       expect(bookingApplyService.calls[0]).toMatchObject({
-        bookingAction: 'propose_slot',
+        bookingAction: 'propose_options',
         serviceInterest: 'консультация',
         preferredDateIso: null,
         timeOfDay: 'any',
@@ -1212,10 +1219,13 @@ describe('runtime routes', () => {
 
       expect(response.statusCode).toBe(200);
       expect(bookingApplyService.calls[0]).toMatchObject({
+        bookingAction: 'propose_slot',
         preferredDateIso: '2026-05-18',
         exactTime: '14:00',
-        metadata: { exact_time: '14:00' },
+        metadata: { exact_time: '14:00', policy_action: 'propose_slot' },
       });
+      expect(response.json().booking_result).toMatchObject({ booking_status: 'awaiting_patient_confirmation' });
+      expect(repository.calls.savedState).toBeUndefined();
     } finally {
       await app.close();
     }
@@ -1264,7 +1274,9 @@ describe('runtime routes', () => {
 
       expect(response.statusCode).toBe(200);
       expect(bookingApplyService.calls).toHaveLength(1);
-      expect(bookingApplyService.calls[0]).toMatchObject({ preferredDateIso: '2026-05-18', exactTime: '14:00' });
+      expect(bookingApplyService.calls[0]).toMatchObject({ bookingAction: 'propose_slot', preferredDateIso: '2026-05-18', exactTime: '14:00' });
+      expect(response.json().booking_result).toMatchObject({ booking_status: 'awaiting_patient_confirmation' });
+      expect(repository.calls.savedState).toBeUndefined();
     } finally {
       await app.close();
     }
@@ -2759,6 +2771,217 @@ describe('runtime routes', () => {
       await app.close();
     }
   });
+
+  it('availability request returns awaiting_slot_choice options, persists runtime memory, and does not notify admin', async () => {
+    const repository = new FakeRuntimeTurnRepository({ cases: [makeCase()], adminRecipient: '999-admin-chat' });
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'availability_request',
+      requested_action: 'check_availability',
+      availability_query: availabilityQuery({ search_type: 'specific_date', date_iso: '2026-05-20', flexibility: 'specific' }),
+      slot_updates: { service_interest: 'консультация' },
+      booking: { preferred_date_iso: '2026-05-20', time_of_day: 'any' },
+    }));
+    const bookingApplyService = new FakeBookingApplyService(awaitingSlotChoiceResponse());
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, { runtimeTurnService: new RuntimeTurnService(repository, aiClient, bookingApplyService) });
+
+    try {
+      const response = await app.inject({ method: 'POST', url: '/runtime/turn', payload: validPayload });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        booking_result: { booking_action: 'propose_options', booking_status: 'awaiting_slot_choice' },
+        side_effects: [],
+      });
+      expect(response.json().reply_text).toContain('Есть несколько вариантов:');
+      expect(response.json().reply_text).toContain('1. 20.05.2026, 10:00');
+      expect(response.json().reply_text).toContain('2. 20.05.2026, 12:30');
+      expect(repository.calls.notification).toBeUndefined();
+      expect(repository.calls.savedState?.state.runtime).toMatchObject({
+        awaiting_slot_choice: true,
+        last_proposed_slots: expect.arrayContaining([
+          expect.objectContaining({ option_id: '1', start_at: '2026-05-20T08:00:00.000Z' }),
+          expect.objectContaining({ option_id: '2', start_at: '2026-05-20T10:30:00.000Z' }),
+        ]),
+      });
+      expect(bookingApplyService.calls[0]).toMatchObject({ bookingAction: 'propose_options' });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('patient typed selection by option id re-checks and holds only the stored selected option', async () => {
+    const repository = new FakeRuntimeTurnRepository({ state: proposedSlotsState() });
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'slot_selection',
+      requested_action: 'select_slot',
+      slot_selection: { selected_option_id: '2', selection_confidence: 'high' },
+    }));
+    const bookingApplyService = new FakeBookingApplyService(awaitingConfirmationResponse({
+      startAt: '2026-05-20T10:30:00.000Z',
+      endAt: '2026-05-20T11:00:00.000Z',
+      label: '20.05.2026, 12:30',
+    }));
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, { runtimeTurnService: new RuntimeTurnService(repository, aiClient, bookingApplyService) });
+
+    try {
+      const response = await app.inject({ method: 'POST', url: '/runtime/turn', payload: validPayload });
+
+      expect(response.statusCode).toBe(200);
+      expect(bookingApplyService.calls).toHaveLength(1);
+      expect(bookingApplyService.calls[0]).toMatchObject({
+        bookingAction: 'propose_slot',
+        selectedSlotStartAt: '2026-05-20T10:30:00.000Z',
+        selectedSlotEndAt: '2026-05-20T11:00:00.000Z',
+      });
+      expect(response.json().booking_result).toMatchObject({ booking_status: 'awaiting_patient_confirmation' });
+      expect(repository.calls.savedState?.state.runtime).toMatchObject({ awaiting_slot_choice: false, last_proposed_slots: [] });
+    } finally {
+      await app.close();
+    }
+  });
+
+
+
+  it('selected stale option clears proposed slot memory after no_slots response', async () => {
+    const repository = new FakeRuntimeTurnRepository({ state: proposedSlotsState() });
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'slot_selection',
+      requested_action: 'select_slot',
+      slot_selection: { selected_option_id: '2', selection_confidence: 'high' },
+    }));
+    const bookingApplyService = new FakeBookingApplyService(noSlotsResponse('stale_slot_unavailable'));
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, { runtimeTurnService: new RuntimeTurnService(repository, aiClient, bookingApplyService) });
+
+    try {
+      const response = await app.inject({ method: 'POST', url: '/runtime/turn', payload: validPayload });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json().booking_result).toMatchObject({ booking_status: 'no_slots', reason: 'stale_slot_unavailable' });
+      expect(repository.calls.savedState?.state.runtime).toMatchObject({ awaiting_slot_choice: false, last_proposed_slots: [] });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('selection after cleared proposed slot memory asks to check availability again', async () => {
+    const repository = new FakeRuntimeTurnRepository({ state: { runtime: { awaiting_slot_choice: false, last_proposed_slots: [] } } });
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'slot_selection',
+      requested_action: 'select_slot',
+      slot_selection: { selected_option_id: '2', selection_confidence: 'high' },
+    }));
+    const bookingApplyService = new FakeBookingApplyService(awaitingConfirmationResponse());
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, { runtimeTurnService: new RuntimeTurnService(repository, aiClient, bookingApplyService) });
+
+    try {
+      const response = await app.inject({ method: 'POST', url: '/runtime/turn', payload: validPayload });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json().reply_text).toContain('проверю свежие свободные варианты');
+      expect(bookingApplyService.calls).toHaveLength(0);
+      expect(repository.calls.savedState).toBeUndefined();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('patient typed selection by unique selected_time re-checks that stored option', async () => {
+    const repository = new FakeRuntimeTurnRepository({ state: proposedSlotsState() });
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'slot_selection',
+      requested_action: 'select_slot',
+      slot_selection: { selected_time: '12:30', selection_confidence: 'medium' },
+    }));
+    const bookingApplyService = new FakeBookingApplyService(awaitingConfirmationResponse({ startAt: '2026-05-20T10:30:00.000Z' }));
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, { runtimeTurnService: new RuntimeTurnService(repository, aiClient, bookingApplyService) });
+
+    try {
+      const response = await app.inject({ method: 'POST', url: '/runtime/turn', payload: validPayload });
+
+      expect(response.statusCode).toBe(200);
+      expect(bookingApplyService.calls[0]).toMatchObject({ selectedSlotStartAt: '2026-05-20T10:30:00.000Z' });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('slot selection with no stored slots asks to check availability again without booking call', async () => {
+    const repository = new FakeRuntimeTurnRepository();
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'slot_selection',
+      requested_action: 'select_slot',
+      slot_selection: { selected_option_id: '1', selection_confidence: 'high' },
+    }));
+    const bookingApplyService = new FakeBookingApplyService(awaitingConfirmationResponse());
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, { runtimeTurnService: new RuntimeTurnService(repository, aiClient, bookingApplyService) });
+
+    try {
+      const response = await app.inject({ method: 'POST', url: '/runtime/turn', payload: validPayload });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json().reply_text).toContain('проверю свежие свободные варианты');
+      expect(bookingApplyService.calls).toHaveLength(0);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('ambiguous selected_time asks clarification and does not call booking', async () => {
+    const repository = new FakeRuntimeTurnRepository({ state: proposedSlotsState({ ambiguousTime: true }) });
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'slot_selection',
+      requested_action: 'select_slot',
+      slot_selection: { selected_time: '08:00', selection_confidence: 'high' },
+    }));
+    const bookingApplyService = new FakeBookingApplyService(awaitingConfirmationResponse());
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, { runtimeTurnService: new RuntimeTurnService(repository, aiClient, bookingApplyService) });
+
+    try {
+      const response = await app.inject({ method: 'POST', url: '/runtime/turn', payload: validPayload });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json().reply_text).toContain('Уточните');
+      expect(bookingApplyService.calls).toHaveLength(0);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('builds Ukrainian localized option replies for awaiting_slot_choice', async () => {
+    const repository = new FakeRuntimeTurnRepository({ cases: [makeCase()] });
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'availability_request',
+      requested_action: 'check_availability',
+      availability_query: availabilityQuery({ search_type: 'specific_date', date_iso: '2026-05-20', flexibility: 'specific' }),
+      slot_updates: { service_interest: 'консультація' },
+      booking: { preferred_date_iso: '2026-05-20', time_of_day: 'any' },
+    }));
+    const bookingApplyService = new FakeBookingApplyService(awaitingSlotChoiceResponse());
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, { runtimeTurnService: new RuntimeTurnService(repository, aiClient, bookingApplyService) });
+
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/runtime/turn',
+        payload: { ...validPayload, meta: { ...validPayload.meta, language_code: 'uk' } },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json().reply_text).toContain('Є кілька варіантів:');
+      expect(response.json().reply_text).toContain('Який вам підходить?');
+    } finally {
+      await app.close();
+    }
+  });
+
 });
 
 interface FakeRuntimeTurnRepositoryOptions {
@@ -2770,6 +2993,7 @@ interface FakeRuntimeTurnRepositoryOptions {
   adminRecipient?: string | number | null;
   notificationSettings?: Record<string, unknown>;
   failNotificationPersistence?: boolean;
+  state?: Record<string, unknown>;
 }
 
 class FakeRuntimeTurnRepository implements RuntimeTurnRepository {
@@ -2790,6 +3014,7 @@ class FakeRuntimeTurnRepository implements RuntimeTurnRepository {
     activeHold?: { clinicId: string; contactId: string; caseId: string | null };
     latestAppointment?: { clinicId: string; contactId: string; caseId: string | null };
     notification?: CreateAdminNotificationInput;
+    savedState?: SaveRuntimeStateInput;
   } = {};
 
   async findActiveClinicByCode(code: string) {
@@ -2872,8 +3097,20 @@ class FakeRuntimeTurnRepository implements RuntimeTurnRepository {
     return {
       clinicId: input.clinicId,
       contactId: input.contactId,
-      state: {},
+      state: this.options.state ?? {},
       stateVersion: 1,
+    };
+  }
+
+  async saveConvoState(input: SaveRuntimeStateInput) {
+    this.calls.savedState = input;
+    this.mutationCalls.push('saveConvoState');
+
+    return {
+      clinicId: input.clinicId,
+      contactId: input.contactId,
+      state: input.state,
+      stateVersion: 2,
     };
   }
 
@@ -2986,7 +3223,79 @@ function awaitingConfirmationResponse(overrides: {
   };
 }
 
-function noSlotsResponse(): BookingApplyResponse {
+
+function awaitingSlotChoiceResponse(): BookingApplyResponse {
+  return {
+    booking_action: 'propose_options',
+    booking_status: 'awaiting_slot_choice',
+    proposed_slot: null,
+    proposed_slots: [
+      {
+        option_id: '1',
+        start_at: '2026-05-20T08:00:00.000Z',
+        end_at: '2026-05-20T08:30:00.000Z',
+        label: '20.05.2026, 10:00',
+        cell_range: 'C4',
+        sheet_name: 'Графік',
+        service_interest: 'консультация',
+        provider_metadata: { timezone: 'Europe/Prague', cell_range: 'C4', sheet_name: 'Графік' },
+      },
+      {
+        option_id: '2',
+        start_at: '2026-05-20T10:30:00.000Z',
+        end_at: '2026-05-20T11:00:00.000Z',
+        label: '20.05.2026, 12:30',
+        cell_range: 'C8',
+        sheet_name: 'Графік',
+        service_interest: 'консультация',
+        provider_metadata: { timezone: 'Europe/Prague', cell_range: 'C8', sheet_name: 'Графік' },
+      },
+      {
+        option_id: '3',
+        start_at: '2026-05-21T13:00:00.000Z',
+        end_at: '2026-05-21T13:30:00.000Z',
+        label: '21.05.2026, 15:00',
+        cell_range: 'D12',
+        sheet_name: 'Графік',
+        service_interest: 'консультация',
+        provider_metadata: { timezone: 'Europe/Prague', cell_range: 'D12', sheet_name: 'Графік' },
+      },
+    ],
+    should_notify_admin: false,
+    reason: 'slot_options_available',
+  };
+}
+
+function proposedSlotsState(options: { ambiguousTime?: boolean } = {}): Record<string, unknown> {
+  const slots = awaitingSlotChoiceResponse().proposed_slots.map((slot) => ({
+    option_id: slot.option_id,
+    start_at: slot.start_at,
+    end_at: slot.end_at,
+    label: slot.label,
+    cell_range: slot.cell_range,
+    sheet_name: slot.sheet_name,
+    service_interest: slot.service_interest,
+    preferred_date_iso: '2026-05-20',
+    time_of_day: 'any',
+    exact_time: null,
+    provider_metadata: slot.provider_metadata,
+  }));
+
+  if (options.ambiguousTime === true) {
+    slots[1] = { ...slots[1], start_at: '2026-05-21T08:00:00.000Z', end_at: '2026-05-21T08:30:00.000Z' };
+  }
+
+  return {
+    runtime: {
+      last_proposed_slots: slots,
+      last_proposed_slots_trace_id: 'previous-trace',
+      last_proposed_slots_created_at: '2026-05-17T10:00:00.000Z',
+      awaiting_slot_choice: true,
+    },
+  };
+}
+
+function noSlotsResponse(reason: 'no_slots_available' | 'stale_slot_unavailable' = 'no_slots_available'): BookingApplyResponse {
   return {
     booking_action: 'propose_slot',
     booking_status: 'no_slots',
@@ -2994,7 +3303,7 @@ function noSlotsResponse(): BookingApplyResponse {
     proposed_slots: [],
     should_notify_admin: false,
     reply_text_override: 'Свободных слотов по вашему запросу сейчас не нашёл. Подскажите другой день или время.',
-    reason: 'no_slots_available',
+    reason,
   };
 }
 
@@ -3178,6 +3487,12 @@ function validAIOutput(overrides: Partial<RuntimeAIOutput> = {}): RuntimeAIOutpu
       exact_time: null,
       flexibility: 'unknown',
     },
+    slot_selection: {
+      selected_option_id: null,
+      selected_start_at: null,
+      selected_time: null,
+      selection_confidence: 'unknown',
+    },
     booking: {
       preferred_date_iso: null,
       preferred_weekday: null,
@@ -3199,6 +3514,10 @@ function validAIOutput(overrides: Partial<RuntimeAIOutput> = {}): RuntimeAIOutpu
     slot_updates: {
       ...base.slot_updates,
       ...overrides.slot_updates,
+    },
+    slot_selection: {
+      ...base.slot_selection,
+      ...overrides.slot_selection,
     },
     booking: {
       ...base.booking,

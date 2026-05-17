@@ -37,7 +37,7 @@ const bookingContext: RuntimeBookingContext = {
 };
 
 describe('RuntimeAvailabilityPlanner', () => {
-  it('plans nearest_available with service as propose_slot', () => {
+  it('plans nearest_available with service as propose_options', () => {
     const result = planRuntimeAvailability({
       ...basePlannerInput(),
       ai_output: validAIOutput({ availability_query: availabilityQuery({ search_type: 'nearest_available', flexibility: 'nearest' }) }),
@@ -45,10 +45,10 @@ describe('RuntimeAvailabilityPlanner', () => {
 
     expect(result).toMatchObject({
       should_call_booking: true,
-      booking_action: 'propose_slot',
+      booking_action: 'propose_options',
       reason: 'availability_nearest_available',
       booking_request: {
-        bookingAction: 'propose_slot',
+        bookingAction: 'propose_options',
         serviceInterest: 'консультация',
         preferredDateIso: null,
         timeOfDay: 'any',
@@ -140,6 +140,28 @@ describe('RuntimeAvailabilityPlanner', () => {
   });
 
 
+
+
+  it('plans direct exact_slot as propose_slot with exactTime', () => {
+    const result = planRuntimeAvailability({
+      ...basePlannerInput({ current_clinic_date_iso: '2026-05-17' }),
+      ai_output: validAIOutput({
+        availability_query: availabilityQuery({ search_type: 'exact_slot', date_iso: '2026-05-18', exact_time: '14:00' }),
+      }),
+    });
+
+    expect(result).toMatchObject({
+      should_call_booking: true,
+      booking_action: 'propose_slot',
+      reason: 'availability_exact_slot',
+      booking_request: {
+        bookingAction: 'propose_slot',
+        preferredDateIso: '2026-05-18',
+        exactTime: '14:00',
+        metadata: { policy_action: 'propose_slot', exact_time: '14:00' },
+      },
+    });
+  });
 
   it('blocks specific_date in the past before booking', () => {
     const result = planRuntimeAvailability({
@@ -334,6 +356,12 @@ function validAIOutput(overrides: Partial<RuntimeAIOutput> = {}): RuntimeAIOutpu
       preferred_contact: null,
     },
     availability_query: availabilityQuery(),
+    slot_selection: {
+      selected_option_id: null,
+      selected_start_at: null,
+      selected_time: null,
+      selection_confidence: 'unknown',
+    },
     booking: {
       preferred_date_iso: null,
       preferred_weekday: null,
@@ -355,6 +383,10 @@ function validAIOutput(overrides: Partial<RuntimeAIOutput> = {}): RuntimeAIOutpu
     slot_updates: {
       ...base.slot_updates,
       ...overrides.slot_updates,
+    },
+    slot_selection: {
+      ...base.slot_selection,
+      ...overrides.slot_selection,
     },
     booking: {
       ...base.booking,

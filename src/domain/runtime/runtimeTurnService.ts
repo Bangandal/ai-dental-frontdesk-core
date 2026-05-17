@@ -15,8 +15,9 @@ import { getClinicLocalDateIso, normalizeRuntimeAIOutputDates } from './runtimeD
 import { classifyRuntimeConversationMode, type RuntimeConversationMode } from './runtimeConversationMode.js';
 import { decideRuntimeAction, type RuntimePolicyDecision } from './runtimePolicy.js';
 import { buildRuntimeReplyBehavior } from './runtimeReplyBehavior.js';
-import { resolveRuntimeReplyLanguage } from './runtimeReplyLanguage.js';
+import { resolveRuntimeReplyLanguage, type RuntimeReplyLanguage } from './runtimeReplyLanguage.js';
 import { runtimeReplyTemplate } from './runtimeReplyTemplates.js';
+import { resolveRuntimeSlotChoice, type RuntimeProposedSlotMemory } from './runtimeSlotChoiceResolver.js';
 import {
   DeterministicRuntimeKnowledgeReplyComposer,
   type RuntimeKnowledgeReplyComposer,
@@ -206,6 +207,12 @@ export interface LoadOrInitConvoStateInput {
   lastUserMessageAt: Date;
 }
 
+export interface SaveRuntimeStateInput {
+  clinicId: string;
+  contactId: string;
+  state: Record<string, unknown>;
+}
+
 export interface RuntimeTurnRepository {
   findActiveClinicByCode(code: string): Promise<RuntimeClinicRecord | null>;
   getOrCreateContact(input: GetOrCreateRuntimeContactInput): Promise<RuntimeContactRecord>;
@@ -214,6 +221,7 @@ export interface RuntimeTurnRepository {
   saveOutboundAssistantMessage(input: SaveOutboundAssistantMessageInput): Promise<RuntimeMessageRecord>;
   createAdminNotification(input: CreateAdminNotificationInput): Promise<RuntimeAdminNotificationRecord>;
   loadOrInitConvoState(input: LoadOrInitConvoStateInput): Promise<RuntimeConvoStateRecord>;
+  saveConvoState(input: SaveRuntimeStateInput): Promise<RuntimeConvoStateRecord>;
   listRecentCases(clinicId: string, contactId: string): Promise<RuntimeCaseRecord[]>;
   findLatestHeldAppointmentForContactOrCase(
     clinicId: string,
@@ -388,7 +396,7 @@ export class RuntimeTurnService {
       debug.ai_output_raw = parsedAIOutput;
       debug.ai_output = aiOutput;
       debug.date_normalization = normalizationResult.debug;
-      const policyDecision = decideRuntimeAction({
+      let policyDecision = decideRuntimeAction({
         ai_output: aiOutput,
         case_context: caseContext,
         booking_context: bookingContext,
@@ -400,6 +408,25 @@ export class RuntimeTurnService {
         current_time_iso: turnStartedAt.toISOString(),
         current_clinic_date_iso: currentDateIso,
       });
+
+      const slotChoiceDecision = buildSlotChoicePolicyDecision({
+        aiOutput,
+        convoState,
+        clinic,
+        contactId: contact.id,
+        caseId: caseContext.current_case_id,
+        channel: input.channel,
+        meta: input.meta,
+        traceId,
+        responseLanguage,
+        currentTimeIso: turnStartedAt.toISOString(),
+      });
+
+      if (slotChoiceDecision !== null) {
+        policyDecision = slotChoiceDecision;
+        debug.slot_choice_resolution = slotChoiceDecision.slot_choice_resolution;
+      }
+
       policyDecisionForReply = policyDecision;
       debug.policy_decision = policyDecision;
 
@@ -409,6 +436,16 @@ export class RuntimeTurnService {
         try {
           bookingResult = await this.bookingApplyService.apply(policyDecision.booking_request);
           debug.booking_result = bookingResult;
+          await this.persistRuntimeSlotMemory({
+            convoState,
+            clinicId: clinic.id,
+            contactId: contact.id,
+            bookingResult,
+            bookingRequest: policyDecision.booking_request,
+            traceId,
+            createdAt: turnStartedAt.toISOString(),
+            debug,
+          });
           conversationMode = classifyRuntimeConversationMode({
             ai_output: aiOutput,
             booking_result: bookingResult,
@@ -581,6 +618,102 @@ export class RuntimeTurnService {
   }
 
 
+  private async persistRuntimeSlotMemory(input: {
+    convoState: RuntimeConvoStateRecord;
+    clinicId: string;
+    contactId: string;
+    bookingResult: BookingApplyResponse;
+    bookingRequest: BookingApplyRequest;
+    traceId: string;
+    createdAt: string;
+    debug: Record<string, unknown>;
+  }): Promise<void> {
+    if (input.bookingResult.booking_status !== 'awaiting_slot_choice') {
+      if (shouldConsumeRuntimeSlotMemory(input.bookingRequest, input.bookingResult)) {
+        await this.consumeRuntimeSlotMemory(input);
+      }
+      return;
+    }
+
+    const proposedSlots = input.bookingResult.proposed_slots.slice(0, 3).map((slot, index): RuntimeProposedSlotMemory => ({
+      option_id: slot.option_id ?? String(index + 1),
+      start_at: slot.start_at,
+      end_at: slot.end_at,
+      label: slot.label,
+      cell_range: slot.cell_range,
+      sheet_name: slot.sheet_name,
+      service_interest: slot.service_interest,
+      preferred_date_iso: input.bookingRequest.preferredDateIso ?? null,
+      time_of_day: input.bookingRequest.timeOfDay,
+      exact_time: input.bookingRequest.exactTime ?? null,
+      provider_metadata: slot.provider_metadata ?? {},
+    }));
+
+    const nextState = {
+      ...input.convoState.state,
+      runtime: {
+        ...readRecord(input.convoState.state.runtime),
+        last_proposed_slots: proposedSlots,
+        last_proposed_slots_trace_id: input.traceId,
+        last_proposed_slots_created_at: input.createdAt,
+        awaiting_slot_choice: true,
+      },
+    };
+
+    try {
+      const saved = await this.repository.saveConvoState({
+        clinicId: input.clinicId,
+        contactId: input.contactId,
+        state: nextState,
+      });
+      input.convoState.state = saved.state;
+      input.convoState.stateVersion = saved.stateVersion;
+      input.debug.runtime_state_saved = { awaiting_slot_choice: true, proposed_slots_count: proposedSlots.length };
+    } catch (error) {
+      input.debug.runtime_state_save_error = formatOutboundPersistenceError(error);
+    }
+  }
+
+
+  private async consumeRuntimeSlotMemory(input: {
+    convoState: RuntimeConvoStateRecord;
+    clinicId: string;
+    contactId: string;
+    bookingResult: BookingApplyResponse;
+    bookingRequest: BookingApplyRequest;
+    traceId: string;
+    createdAt: string;
+    debug: Record<string, unknown>;
+  }): Promise<void> {
+    const nextState = {
+      ...input.convoState.state,
+      runtime: {
+        ...readRecord(input.convoState.state.runtime),
+        last_proposed_slots: [],
+        last_proposed_slots_consumed_trace_id: input.traceId,
+        last_proposed_slots_consumed_at: input.createdAt,
+        awaiting_slot_choice: false,
+      },
+    };
+
+    try {
+      const saved = await this.repository.saveConvoState({
+        clinicId: input.clinicId,
+        contactId: input.contactId,
+        state: nextState,
+      });
+      input.convoState.state = saved.state;
+      input.convoState.stateVersion = saved.stateVersion;
+      input.debug.runtime_state_saved = {
+        awaiting_slot_choice: false,
+        proposed_slots_count: 0,
+        consumed_booking_status: input.bookingResult.booking_status,
+      };
+    } catch (error) {
+      input.debug.runtime_state_save_error = formatOutboundPersistenceError(error);
+    }
+  }
+
   private async composeKnowledgeReply(input: {
     knowledgeResult: RuntimeKnowledgeResult | null;
     responseLanguage: ReturnType<typeof resolveRuntimeReplyLanguage>;
@@ -723,6 +856,160 @@ export class RuntimeTurnService {
       return [];
     }
   }
+}
+
+
+
+function shouldConsumeRuntimeSlotMemory(bookingRequest: BookingApplyRequest, bookingResult: BookingApplyResponse): boolean {
+  const policyAction = readRecord(bookingRequest.metadata).policy_action;
+
+  if (policyAction !== 'select_slot') {
+    return false;
+  }
+
+  return bookingResult.booking_status === 'awaiting_patient_confirmation' || bookingResult.booking_status === 'no_slots';
+}
+
+interface SlotChoicePolicyDecision extends RuntimePolicyDecision {
+  slot_choice_resolution: Record<string, unknown>;
+}
+
+function buildSlotChoicePolicyDecision(input: {
+  aiOutput: RuntimeAIOutput;
+  convoState: RuntimeConvoStateRecord;
+  clinic: RuntimeClinicRecord;
+  contactId: string;
+  caseId: string | null;
+  channel: RuntimeTurnInput['channel'];
+  meta?: RuntimeTurnInput['meta'];
+  traceId: string;
+  responseLanguage: RuntimeReplyLanguage;
+  currentTimeIso: string;
+}): SlotChoicePolicyDecision | null {
+  if (!hasTypedSlotSelection(input.aiOutput)) {
+    return null;
+  }
+
+  const runtimeState = readRecord(input.convoState.state.runtime);
+  const lastProposedSlots = readProposedSlotMemory(runtimeState.last_proposed_slots);
+  const resolution = resolveRuntimeSlotChoice({
+    slot_selection: input.aiOutput.slot_selection,
+    last_proposed_slots: lastProposedSlots,
+    trace_id: input.traceId,
+    language: input.responseLanguage,
+  });
+
+  if (!resolution.matched || resolution.selected_slot === null) {
+    return {
+      next_action: 'clarify_slot_choice',
+      should_call_booking: false,
+      booking_request: null,
+      reason: resolution.reason,
+      warnings: resolution.warnings,
+      reply_text: resolution.reply_text,
+      slot_choice_resolution: { ...resolution },
+    };
+  }
+
+  const selectedSlot = resolution.selected_slot;
+  return {
+    next_action: 'select_slot',
+    should_call_booking: true,
+    booking_request: {
+      clinicId: input.clinic.id,
+      contactId: input.contactId,
+      caseId: input.caseId,
+      bookingAction: 'propose_slot',
+      serviceInterest: selectedSlot.service_interest ?? input.aiOutput.slot_updates.service_interest,
+      preferredDateIso: selectedSlot.preferred_date_iso,
+      preferredWeekday: null,
+      timeOfDay: 'any',
+      exactTime: null,
+      activeHoldId: null,
+      selectedSlotStartAt: selectedSlot.start_at,
+      selectedSlotEndAt: selectedSlot.end_at,
+      selectedSlotProviderMetadata: selectedSlot.provider_metadata,
+      patientName: readPatientNameFromMeta(input.meta),
+      channel: input.channel,
+      traceId: input.traceId,
+      durationMinutes: 30,
+      metadata: {
+        source: 'runtime_slot_choice_resolver',
+        policy_action: 'select_slot',
+        clinic_timezone: input.clinic.timezone,
+        current_time_iso: input.currentTimeIso,
+        selected_option_id: selectedSlot.option_id,
+      },
+    },
+    reason: resolution.reason,
+    warnings: resolution.warnings,
+    slot_choice_resolution: { ...resolution },
+  };
+}
+
+function hasTypedSlotSelection(aiOutput: RuntimeAIOutput): boolean {
+  const selection = aiOutput.slot_selection;
+  return aiOutput.requested_action === 'select_slot'
+    || aiOutput.conversation_intent === 'slot_selection'
+    || isNonEmptyString(selection.selected_option_id)
+    || isNonEmptyString(selection.selected_start_at)
+    || isNonEmptyString(selection.selected_time);
+}
+
+function readProposedSlotMemory(value: unknown): RuntimeProposedSlotMemory[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.flatMap((item): RuntimeProposedSlotMemory[] => {
+    const record = readRecord(item);
+    const optionId = readString(record.option_id);
+    const startAt = readString(record.start_at);
+    const endAt = readString(record.end_at);
+    const label = readString(record.label);
+
+    if (optionId === null || startAt === null || endAt === null || label === null) {
+      return [];
+    }
+
+    return [{
+      option_id: optionId,
+      start_at: startAt,
+      end_at: endAt,
+      label,
+      cell_range: readString(record.cell_range),
+      sheet_name: readString(record.sheet_name),
+      service_interest: readString(record.service_interest),
+      preferred_date_iso: readString(record.preferred_date_iso),
+      time_of_day: readString(record.time_of_day),
+      exact_time: readString(record.exact_time),
+      provider_metadata: readRecord(record.provider_metadata),
+    }];
+  });
+}
+
+function readRecord(value: unknown): Record<string, unknown> {
+  if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+
+  return {};
+}
+
+function readString(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() !== '' ? value : null;
+}
+
+function isNonEmptyString(value: string | null): boolean {
+  return typeof value === 'string' && value.trim() !== '';
+}
+
+function readPatientNameFromMeta(meta: RuntimeTurnInput['meta'] | undefined): string | null {
+  const firstName = readString(meta?.first_name);
+  const lastName = readString(meta?.last_name);
+  const parts = [firstName, lastName].filter((part): part is string => part !== null);
+
+  return parts.length === 0 ? null : parts.join(' ');
 }
 
 interface RetrieveKnowledgeForReplyInput {
@@ -1326,6 +1613,21 @@ export class PgRuntimeTurnRepository implements RuntimeTurnRepository {
 
       throw error;
     }
+  }
+
+  async saveConvoState(input: SaveRuntimeStateInput): Promise<RuntimeConvoStateRecord> {
+    const result = await this.db.query<ConvoStateRow>(
+      `update core.convo_state
+       set state_json = $3::jsonb,
+           state_version = state_version + 1,
+           updated_at = now()
+       where clinic_id = $1
+         and contact_id = $2
+       returning contact_id, clinic_id, state_json, state_version`,
+      [input.clinicId, input.contactId, JSON.stringify(input.state)],
+    );
+
+    return mapConvoStateRow(result.rows[0]);
   }
 
   async listRecentCases(clinicId: string, contactId: string): Promise<RuntimeCaseRecord[]> {

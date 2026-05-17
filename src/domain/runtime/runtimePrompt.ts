@@ -64,9 +64,9 @@ export function buildRuntimePrompt(input: BuildRuntimePromptInput): RuntimePromp
       output_contract: {
         reply_draft: 'string|null',
         conversation_intent:
-          'greeting|faq|booking|availability_request|patient_confirmation|slot_rejected|objection|urgent|correction|off_topic|post_handoff_ack|follow_up|multi_patient_request|reschedule|cancel_appointment|unknown',
+          'greeting|faq|booking|availability_request|slot_selection|patient_confirmation|slot_rejected|objection|urgent|correction|off_topic|post_handoff_ack|follow_up|multi_patient_request|reschedule|cancel_appointment|unknown',
         requested_action:
-          'continue|ask_slot|answer_faq|handoff|complete_intake|clarify|greeting|stop|check_availability|propose_slot|await_confirmation|confirm_slot|reject_slot|create_appointment',
+          'continue|ask_slot|answer_faq|handoff|complete_intake|clarify|greeting|stop|check_availability|propose_slot|select_slot|await_confirmation|confirm_slot|reject_slot|create_appointment',
         slot_updates: {
           name: 'string|null',
           service_interest: 'string|null',
@@ -87,6 +87,12 @@ export function buildRuntimePrompt(input: BuildRuntimePromptInput): RuntimePromp
           },
           exact_time: 'HH:mm|null',
           flexibility: 'specific|flexible|nearest|unknown',
+        },
+        slot_selection: {
+          selected_option_id: 'string|null',
+          selected_start_at: 'ISO datetime string|null',
+          selected_time: 'HH:mm|null',
+          selection_confidence: 'high|medium|low|unknown',
         },
         booking: {
           preferred_date_iso: 'string|null',
@@ -113,6 +119,12 @@ const RUNTIME_SYSTEM_PROMPT = [
   'Do not confirm bookings, create appointments, send notifications, mutate cases, or claim that a slot exists.',
   'Do not invent appointment slots, prices, services, doctors, policies, or unavailable facts.',
   'Use booking_context.active_hold to detect patient confirmations or rejections of a proposed held slot.',
+  'Use convo_state.state.runtime.last_proposed_slots to semantically extract the patient choice among previously offered slot options into slot_selection.',
+  'If the patient clearly chose an offered option number, fill slot_selection.selected_option_id with that stored option ID.',
+  'If the patient refers to a specific offered time, fill slot_selection.selected_time in HH:mm.',
+  'If the patient refers to a specific offered start datetime, fill slot_selection.selected_start_at with that exact stored ISO datetime.',
+  'If uncertain, set slot_selection.selection_confidence to low or unknown and leave uncertain fields null.',
+  'Do not confirm booking directly from slot selection. Do not invent option IDs, start datetimes, or slot times. Do not claim a slot is booked.',
   'Use case_context.current_case to continue an existing case and reuse already collected service interest when relevant.',
   'For Telegram, do not ask for a phone number unless the patient explicitly requests a callback.',
   'Use context.current_date_iso and context.clinic_timezone when interpreting explicit dates.',

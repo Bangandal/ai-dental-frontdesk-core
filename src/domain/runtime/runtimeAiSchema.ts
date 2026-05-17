@@ -5,6 +5,7 @@ export const runtimeConversationIntentValues = [
   'faq',
   'booking',
   'availability_request',
+  'slot_selection',
   'patient_confirmation',
   'slot_rejected',
   'objection',
@@ -30,6 +31,7 @@ export const runtimeRequestedActionValues = [
   'stop',
   'check_availability',
   'propose_slot',
+  'select_slot',
   'await_confirmation',
   'confirm_slot',
   'reject_slot',
@@ -43,6 +45,7 @@ export const runtimeRelativeDayValues = ['today', 'tomorrow', 'day_after_tomorro
 export const runtimeAvailabilityTimeWindowTypeValues = ['morning', 'afternoon', 'evening', 'before', 'after', 'between', 'any'] as const;
 export const runtimeAvailabilityFlexibilityValues = ['specific', 'flexible', 'nearest', 'unknown'] as const;
 export const runtimeConfidenceValues = ['high', 'medium', 'low'] as const;
+export const runtimeSlotSelectionConfidenceValues = ['high', 'medium', 'low', 'unknown'] as const;
 export const runtimeFaqTopicValues = ['price', 'insurance', 'address', 'other', 'unknown'] as const;
 export const runtimePatientScopeValues = ['self', 'another_person', 'multiple_people', 'unknown'] as const;
 
@@ -50,6 +53,13 @@ const runtimeAvailabilityTimeWindowSchema = z.object({
   type: z.enum(runtimeAvailabilityTimeWindowTypeValues),
   start_time: z.string().nullable(),
   end_time: z.string().nullable(),
+}).strict();
+
+const runtimeSlotSelectionSchema = z.object({
+  selected_option_id: z.string().nullable(),
+  selected_start_at: z.string().nullable(),
+  selected_time: z.string().nullable(),
+  selection_confidence: z.enum(runtimeSlotSelectionConfidenceValues),
 }).strict();
 
 const runtimeAvailabilityQuerySchema = z.object({
@@ -75,6 +85,7 @@ export const runtimeAIOutputSchema = z.object({
     preferred_contact: z.string().nullable(),
   }),
   availability_query: runtimeAvailabilityQuerySchema.nullable(),
+  slot_selection: runtimeSlotSelectionSchema,
   booking: z.object({
     preferred_date_iso: z.string().nullable(),
     preferred_weekday: z.string().nullable(),
@@ -101,6 +112,7 @@ export const runtimeAIOutputJsonSchema = {
     'requested_action',
     'slot_updates',
     'availability_query',
+    'slot_selection',
     'booking',
     'faq_topic',
     'patient_scope',
@@ -157,6 +169,17 @@ export const runtimeAIOutputJsonSchema = {
           },
         },
       ],
+    },
+    slot_selection: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['selected_option_id', 'selected_start_at', 'selected_time', 'selection_confidence'],
+      properties: {
+        selected_option_id: nullableStringSchema,
+        selected_start_at: nullableStringSchema,
+        selected_time: nullableStringSchema,
+        selection_confidence: { type: 'string', enum: runtimeSlotSelectionConfidenceValues },
+      },
     },
     booking: {
       type: 'object',
