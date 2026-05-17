@@ -60,6 +60,61 @@ describe('RuntimeAvailabilityPlanner', () => {
     });
   });
 
+  it('maps broad flexible availability to spread proposal strategy', () => {
+    const result = planRuntimeAvailability({
+      ...basePlannerInput(),
+      ai_output: validAIOutput({ availability_query: availabilityQuery({ search_type: 'nearest_available', flexibility: 'flexible' }) }),
+    });
+
+    expect(result.booking_request?.metadata).toMatchObject({ proposal_strategy: 'spread' });
+  });
+
+  it('maps explicit nearest flexibility to nearest proposal strategy', () => {
+    const result = planRuntimeAvailability({
+      ...basePlannerInput(),
+      ai_output: validAIOutput({ availability_query: availabilityQuery({ search_type: 'nearest_available', flexibility: 'nearest' }) }),
+    });
+
+    expect(result.booking_request?.metadata).toMatchObject({ proposal_strategy: 'nearest' });
+  });
+
+  it('defaults null or unknown flexibility to spread proposal strategy', () => {
+    const unknown = planRuntimeAvailability({
+      ...basePlannerInput(),
+      ai_output: validAIOutput({ availability_query: availabilityQuery({ search_type: 'nearest_available', flexibility: 'unknown' }) }),
+    });
+    const nullish = planRuntimeAvailability({
+      ...basePlannerInput(),
+      ai_output: validAIOutput({
+        availability_query: availabilityQuery({ search_type: 'nearest_available', flexibility: null as unknown as NonNullable<RuntimeAIOutput['availability_query']>['flexibility'] }),
+      }),
+    });
+
+    expect(unknown.booking_request?.metadata).toMatchObject({ proposal_strategy: 'spread' });
+    expect(nullish.booking_request?.metadata).toMatchObject({ proposal_strategy: 'spread' });
+  });
+
+  it('maps specific date, weekday, and time window option proposals to spread strategy', () => {
+    const cases = [
+      availabilityQuery({ search_type: 'specific_date', date_iso: '2026-05-12', flexibility: 'specific' }),
+      availabilityQuery({ search_type: 'weekday', weekday: 'wednesday', flexibility: 'flexible' }),
+      availabilityQuery({
+        search_type: 'time_constraint',
+        time_window: { type: 'afternoon', start_time: null, end_time: null },
+        flexibility: 'flexible',
+      }),
+    ];
+
+    for (const query of cases) {
+      const result = planRuntimeAvailability({
+        ...basePlannerInput(),
+        ai_output: validAIOutput({ availability_query: query }),
+      });
+
+      expect(result.booking_request?.metadata).toMatchObject({ proposal_strategy: 'spread' });
+    }
+  });
+
   it('resolves nearest Saturday using the clinic-local date', () => {
     const result = planRuntimeAvailability({
       ...basePlannerInput({ current_clinic_date_iso: '2026-05-12' }),

@@ -2817,6 +2817,58 @@ describe('runtime routes', () => {
     }
   });
 
+  it('broad when-free typed availability uses spread proposal strategy without raw text matching', async () => {
+    const repository = new FakeRuntimeTurnRepository({ cases: [makeCase()] });
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'availability_request',
+      requested_action: 'check_availability',
+      availability_query: availabilityQuery({ search_type: 'nearest_available', flexibility: 'flexible' }),
+      slot_updates: { service_interest: 'консультация' },
+    }));
+    const bookingApplyService = new FakeBookingApplyService(awaitingSlotChoiceResponse());
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, { runtimeTurnService: new RuntimeTurnService(repository, aiClient, bookingApplyService) });
+
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/runtime/turn',
+        payload: { ...validPayload, text: 'Хочу записаться на консультацию стоматолога, когда есть свободно?' },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(bookingApplyService.calls[0]).toMatchObject({ bookingAction: 'propose_options', metadata: { proposal_strategy: 'spread' } });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('explicit nearest typed availability uses nearest proposal strategy', async () => {
+    const repository = new FakeRuntimeTurnRepository({ cases: [makeCase()] });
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'availability_request',
+      requested_action: 'check_availability',
+      availability_query: availabilityQuery({ search_type: 'nearest_available', flexibility: 'nearest' }),
+      slot_updates: { service_interest: 'консультация' },
+    }));
+    const bookingApplyService = new FakeBookingApplyService(awaitingSlotChoiceResponse());
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, { runtimeTurnService: new RuntimeTurnService(repository, aiClient, bookingApplyService) });
+
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/runtime/turn',
+        payload: { ...validPayload, text: 'какие есть варианты?' },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(bookingApplyService.calls[0]).toMatchObject({ bookingAction: 'propose_options', metadata: { proposal_strategy: 'nearest' } });
+    } finally {
+      await app.close();
+    }
+  });
+
   it('patient typed selection by option id re-checks and holds only the stored selected option', async () => {
     const repository = new FakeRuntimeTurnRepository({ state: proposedSlotsState() });
     const aiClient = new FakeRuntimeAIClient(validAIOutput({
@@ -2842,7 +2894,12 @@ describe('runtime routes', () => {
         selectedSlotStartAt: '2026-05-20T10:30:00.000Z',
         selectedSlotEndAt: '2026-05-20T11:00:00.000Z',
       });
-      expect(response.json().booking_result).toMatchObject({ booking_status: 'awaiting_patient_confirmation' });
+      expect(response.json().booking_result).toMatchObject({
+        booking_status: 'awaiting_patient_confirmation',
+        proposed_slot: { start_at: '2026-05-20T10:30:00.000Z' },
+        proposed_slots: [expect.objectContaining({ start_at: '2026-05-20T10:30:00.000Z' })],
+      });
+      expect(response.json().booking_result.proposed_slots).toHaveLength(1);
       expect(repository.calls.savedState?.state.runtime).toMatchObject({ awaiting_slot_choice: false, last_proposed_slots: [] });
     } finally {
       await app.close();
@@ -3211,20 +3268,22 @@ function awaitingConfirmationResponse(overrides: {
   endAt?: string;
   label?: string;
 } = {}): BookingApplyResponse {
+  const proposedSlot = {
+    start_at: overrides.startAt ?? '2026-05-18T07:00:00.000Z',
+    end_at: overrides.endAt ?? '2026-05-18T07:30:00.000Z',
+    label: overrides.label ?? '18.05.2026, 09:00',
+    cell_range: 'C4',
+    sheet_name: 'Графік',
+    service_interest: 'консультация',
+  };
+
   return {
     booking_action: 'propose_slot',
     booking_status: 'awaiting_patient_confirmation',
     hold_id: 'hold-key-1',
     appointment_id: '66666666-6666-6666-6666-666666666666',
-    proposed_slot: {
-      start_at: overrides.startAt ?? '2026-05-18T07:00:00.000Z',
-      end_at: overrides.endAt ?? '2026-05-18T07:30:00.000Z',
-      label: overrides.label ?? '18.05.2026, 09:00',
-      cell_range: 'C4',
-      sheet_name: 'Графік',
-      service_interest: 'консультация',
-    },
-    proposed_slots: [],
+    proposed_slot: proposedSlot,
+    proposed_slots: [proposedSlot],
     should_notify_admin: false,
     reason: 'slot_proposed',
   };

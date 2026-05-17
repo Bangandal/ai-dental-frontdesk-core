@@ -214,7 +214,6 @@ export class BookingApplyService {
     }
 
     const proposedSlot = toBookingSlotPayload(selectedSlot, request.serviceInterest ?? null);
-    const proposedSlots = candidateSlots.map((slot) => toBookingSlotPayload(slot, request.serviceInterest ?? null));
 
     return {
       booking_action: 'propose_slot',
@@ -222,7 +221,7 @@ export class BookingApplyService {
       hold_id: dedupeKey,
       appointment_id: hold.data.appointment_id,
       proposed_slot: proposedSlot,
-      proposed_slots: proposedSlots,
+      proposed_slots: [proposedSlot],
       should_notify_admin: false,
       reason: 'slot_proposed',
     };
