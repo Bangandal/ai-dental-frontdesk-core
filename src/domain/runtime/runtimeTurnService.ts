@@ -438,7 +438,7 @@ export class RuntimeTurnService {
         currentTimeIso: turnStartedAt.toISOString(),
       });
 
-      if (slotChoiceDecision !== null) {
+      if (slotChoiceDecision !== null && !isActiveHoldTerminalPolicyDecision(policyDecision, bookingContext)) {
         policyDecision = slotChoiceDecision;
         debug.slot_choice_resolution = slotChoiceDecision.slot_choice_resolution;
       }
@@ -884,6 +884,19 @@ function shouldConsumeRuntimeSlotMemory(bookingRequest: BookingApplyRequest, boo
   }
 
   return bookingResult.booking_status === 'awaiting_patient_confirmation' || bookingResult.booking_status === 'no_slots';
+}
+
+
+function isActiveHoldTerminalPolicyDecision(
+  policyDecision: RuntimePolicyDecision,
+  bookingContext: RuntimeBookingContext,
+): boolean {
+  if (bookingContext.active_hold === null || policyDecision.booking_request === null) {
+    return false;
+  }
+
+  return policyDecision.booking_request.bookingAction === 'confirm_slot'
+    || policyDecision.booking_request.bookingAction === 'cancel_hold';
 }
 
 interface SlotChoicePolicyDecision extends RuntimePolicyDecision {
