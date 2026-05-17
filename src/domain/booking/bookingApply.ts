@@ -179,6 +179,7 @@ export class BookingApplyService {
         maxOptions: readSaneIntegerMetadata(request.metadata, 'max_options', 3),
         proposalStepMinutes: readSaneIntegerMetadata(request.metadata, 'proposal_step_minutes', 60),
         fallbackProposalStepMinutes: 30,
+        strategy: readProposalStrategyMetadata(request.metadata),
       }).map((slot, index) => ({
         ...toBookingSlotPayload(slot, request.serviceInterest ?? null),
         option_id: String(index + 1),
@@ -562,6 +563,16 @@ function readValidIsoMetadata(metadata: Record<string, unknown>, key: string): s
   }
 
   return value;
+}
+
+function readProposalStrategyMetadata(metadata: Record<string, unknown>): 'nearest' | 'spread' {
+  const value = metadata.proposal_strategy;
+
+  if (value === 'nearest' || value === 'spread') {
+    return value;
+  }
+
+  return 'spread';
 }
 
 function readSaneIntegerMetadata(metadata: Record<string, unknown>, key: string, fallback: number): number {

@@ -202,7 +202,7 @@ describe('booking apply route', () => {
           bookingAction: 'propose_options',
           preferredDateIso: '2026-05-20',
           timeOfDay: 'any',
-          metadata: { proposal_step_minutes: 60, max_options: 3 },
+          metadata: { proposal_step_minutes: 60, max_options: 3, proposal_strategy: 'nearest' },
         },
       });
 
@@ -213,6 +213,35 @@ describe('booking apply route', () => {
         '2026-05-20T10:30:00.000Z',
       ]);
       expect(repository.appointments).toHaveLength(0);
+    } finally {
+      await app.close();
+    }
+  });
+
+
+  it('propose_options defaults to spread strategy for representative full-day options', async () => {
+    const adapter = new MockScheduleAdapter({ slots: makeUtcSlotsEveryMinutes('2026-05-20', 7, 18, 15) });
+    const app = await buildTestApp(new InMemoryAppointmentRepository(), adapter);
+
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/booking/apply',
+        payload: {
+          ...basePayload,
+          bookingAction: 'propose_options',
+          preferredDateIso: '2026-05-20',
+          timeOfDay: 'any',
+          metadata: { proposal_step_minutes: 60, max_options: 3 },
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json().proposed_slots.map((slot: { start_at: string }) => slot.start_at)).toEqual([
+        '2026-05-20T07:00:00.000Z',
+        '2026-05-20T12:30:00.000Z',
+        '2026-05-20T18:00:00.000Z',
+      ]);
     } finally {
       await app.close();
     }
@@ -248,7 +277,6 @@ describe('booking apply route', () => {
       });
       expect(response.json().proposed_slots.map((slot: { start_at: string }) => slot.start_at)).toEqual([
         '2026-05-21T08:00:00.000Z',
-        '2026-05-22T08:00:00.000Z',
       ]);
     } finally {
       await app.close();
@@ -921,6 +949,21 @@ class InMemoryAppointmentRepository implements AppointmentRepository {
 
     return appointment;
   }
+}
+
+function makeUtcSlotsEveryMinutes(dateIso: string, startHour: number, endHour: number, stepMinutes: number): ScheduleSlot[] {
+  const slots: ScheduleSlot[] = [];
+  const year = Number(dateIso.slice(0, 4));
+  const month = Number(dateIso.slice(5, 7)) - 1;
+  const day = Number(dateIso.slice(8, 10));
+  const start = Date.UTC(year, month, day, startHour, 0, 0, 0);
+  const end = Date.UTC(year, month, day, endHour, 0, 0, 0);
+
+  for (let time = start, index = 1; time <= end; time += stepMinutes * 60_000, index += 1) {
+    slots.push(makeUtcSlot(new Date(time).toISOString(), `C${index}`));
+  }
+
+  return slots;
 }
 
 function makeUtcSlot(startAt: string, cellRange: string): ScheduleSlot {

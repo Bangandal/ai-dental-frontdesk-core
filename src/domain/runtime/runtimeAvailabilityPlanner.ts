@@ -370,7 +370,12 @@ function buildPlannerMetadata(
     search_window_days: query.search_type === 'nearest_available' || query.search_type === 'time_constraint' ? 14 : null,
     proposal_step_minutes: bookingAction === 'propose_options' ? 60 : null,
     max_options: bookingAction === 'propose_options' ? 3 : null,
+    proposal_strategy: bookingAction === 'propose_options' ? resolveProposalStrategy(query) : null,
   };
+}
+
+function resolveProposalStrategy(query: AvailabilityQuery): 'nearest' | 'spread' {
+  return query.flexibility === 'nearest' ? 'nearest' : 'spread';
 }
 
 function buildReason(searchType: AvailabilitySearchType, usedFallback: boolean): string {

@@ -1149,6 +1149,7 @@ describe('runtime routes', () => {
           search_window_days: 14,
           proposal_step_minutes: 60,
           max_options: 3,
+          proposal_strategy: 'nearest',
         },
       });
       expect(response.json()).toMatchObject({
@@ -2810,7 +2811,7 @@ describe('runtime routes', () => {
           expect.objectContaining({ option_id: '2', start_at: '2026-05-20T10:30:00.000Z' }),
         ]),
       });
-      expect(bookingApplyService.calls[0]).toMatchObject({ bookingAction: 'propose_options' });
+      expect(bookingApplyService.calls[0]).toMatchObject({ bookingAction: 'propose_options', metadata: { proposal_strategy: 'spread' } });
     } finally {
       await app.close();
     }
