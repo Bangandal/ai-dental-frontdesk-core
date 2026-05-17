@@ -1342,6 +1342,69 @@ describe('runtime routes', () => {
     }
   });
 
+  it('does not call booking for past exact_slot when AI requested_action is clarify', async () => {
+    const repository = new FakeRuntimeTurnRepository({ cases: [makeCase()] });
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'booking',
+      requested_action: 'clarify',
+      confidence: 'low',
+      reply_draft: 'Подскажите, пожалуйста, чем можем помочь — записью или вопросом по клинике?',
+      availability_query: availabilityQuery({ search_type: 'exact_slot', date_iso: '2026-05-16', exact_time: '08:00', flexibility: 'specific' }),
+      slot_updates: { service_interest: 'консультация стоматолога' },
+    }));
+    const bookingApplyService = new FakeBookingApplyService(awaitingConfirmationResponse());
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, { runtimeTurnService: new RuntimeTurnService(repository, aiClient, bookingApplyService, () => new Date('2026-05-17T10:00:00.000Z')) });
+
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/runtime/turn',
+        payload: { ...validPayload, text: 'Хочу записаться на консультацию стоматолога 16.05 на 08:00', meta: { ...validPayload.meta, language_code: 'ru' } },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        booking_result: null,
+        reply_text: 'Эта дата уже прошла. Напишите, пожалуйста, будущую дату и время.',
+        debug: { reply_source: 'policy', policy_decision: { next_action: 'ask_preferred_datetime', should_call_booking: false, reason: 'exact_slot_date_in_past' } },
+      });
+      expect(bookingApplyService.calls).toEqual([]);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('does not call booking for past specific date when AI requested_action is check_availability', async () => {
+    const repository = new FakeRuntimeTurnRepository({ cases: [makeCase({ collected: { service_interest: 'консультация' } })] });
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'availability_request',
+      requested_action: 'check_availability',
+      availability_query: availabilityQuery({ search_type: 'specific_date', date_iso: '2026-05-16', flexibility: 'specific' }),
+    }));
+    const bookingApplyService = new FakeBookingApplyService(awaitingSlotChoiceResponse());
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, { runtimeTurnService: new RuntimeTurnService(repository, aiClient, bookingApplyService, () => new Date('2026-05-17T10:00:00.000Z')) });
+
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/runtime/turn',
+        payload: { ...validPayload, text: 'Можно записаться 16.05?', meta: { ...validPayload.meta, language_code: 'ru' } },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        booking_result: null,
+        reply_text: 'Эта дата уже прошла. Напишите, пожалуйста, будущую дату и время.',
+        debug: { reply_source: 'policy', policy_decision: { next_action: 'ask_preferred_datetime', should_call_booking: false, reason: 'date_in_past' } },
+      });
+      expect(bookingApplyService.calls).toEqual([]);
+    } finally {
+      await app.close();
+    }
+  });
+
   it('still calls booking for a future exact_slot with exactTime', async () => {
     const repository = new FakeRuntimeTurnRepository({ cases: [makeCase({ collected: { service_interest: 'консультация' } })] });
     const aiClient = new FakeRuntimeAIClient(validAIOutput({
@@ -2678,6 +2741,27 @@ describe('runtime routes', () => {
       expect(response.statusCode).toBe(200);
       expect(response.json()).toMatchObject({ side_effects: [{ payload: { trigger: 'ai_handoff_recommended' } }] });
       expect(repository.calls.notification).toBeDefined();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('uses settings.admin_telegram_chat_id as the admin notification recipient', async () => {
+    const repository = new FakeRuntimeTurnRepository({ notificationSettings: { admin_telegram_chat_id: 'direct-admin-chat' } });
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'urgent',
+      requested_action: 'clarify',
+      reply_draft: 'Сейчас передам администратору.',
+    }));
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, { runtimeTurnService: new RuntimeTurnService(repository, aiClient) });
+
+    try {
+      const response = await app.inject({ method: 'POST', url: '/runtime/turn', payload: validPayload });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({ side_effects: [{ recipient: 'direct-admin-chat', payload: { trigger: 'ai_urgent_intent' } }] });
+      expect(repository.calls.notification).toMatchObject({ recipient: 'direct-admin-chat' });
     } finally {
       await app.close();
     }
