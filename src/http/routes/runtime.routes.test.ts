@@ -43,6 +43,8 @@ const validPayload = {
   },
 } as const;
 
+const fixedClock = () => new Date('2026-05-17T12:00:00.000Z');
+
 
 describe('runtime AI client factory', () => {
   it('uses NoopRuntimeAIClient when OpenAI runtime is not explicitly enabled', async () => {
@@ -356,6 +358,210 @@ describe('runtime routes', () => {
   });
 
 
+  it('asks for service and saves pending_clarification when price FAQ lacks service_interest', async () => {
+    const repository = new FakeRuntimeTurnRepository();
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'faq',
+      requested_action: 'answer_faq',
+      faq_topic: 'price',
+    }));
+    const bookingApplyService = new FakeBookingApplyService(noBookingResponse());
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, {
+      runtimeTurnService: new RuntimeTurnService(repository, aiClient, bookingApplyService, fixedClock),
+    });
+
+    try {
+      const response = await app.inject({ method: 'POST', url: '/runtime/turn', payload: { ...validPayload, text: 'Какие цены в клинике?' } });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        reply_text: 'Подскажите, пожалуйста, какая именно услуга интересует — сориентирую по стоимости.',
+        booking_result: null,
+        debug: {
+          conversation_mode: 'faq_price',
+          policy_decision: { should_call_booking: false, reason: 'price_faq_missing_service_interest' },
+          runtime_state_saved: {
+            pending_clarification: {
+              type: 'faq',
+              faq_topic: 'price',
+              missing_slot: 'service_interest',
+              trace_id: expect.any(String),
+            },
+          },
+        },
+      });
+      expect(repository.calls.savedState?.state.runtime).toMatchObject({
+        pending_clarification: {
+          type: 'faq',
+          faq_topic: 'price',
+          missing_slot: 'service_interest',
+          created_at: '2026-05-17T12:00:00.000Z',
+          trace_id: expect.any(String),
+        },
+      });
+      expect(bookingApplyService.calls).toEqual([]);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('answers pending price FAQ from KB for the next service-only message and clears pending_clarification without booking', async () => {
+    const repository = new FakeRuntimeTurnRepository({ state: pendingPriceFaqState() });
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'booking',
+      requested_action: 'ask_slot',
+      slot_updates: { service_interest: 'чистка зубов' },
+      reply_draft: 'Подскажите удобный день и время.',
+    }));
+    const bookingApplyService = new FakeBookingApplyService(awaitingConfirmationResponse());
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, {
+      runtimeTurnService: new RuntimeTurnService(
+        repository,
+        aiClient,
+        bookingApplyService,
+        fixedClock,
+        new FakeRuntimeKnowledgeRepository({
+          found: true,
+          count: 1,
+          top_similarity: 0.9,
+          context_text: 'RU: Чистка зубов стоит от 1200 Kč.',
+          snippets: [{ title: 'Cleaning price', content: 'RU: Чистка зубов стоит от 1200 Kč.', metadata: { source_type: 'faq' }, score: 0.9, source_type: 'faq' }],
+        }),
+        new FakeRuntimeEmbeddingClient(makeEmbedding()),
+      ),
+    });
+
+    try {
+      const response = await app.inject({ method: 'POST', url: '/runtime/turn', payload: { ...validPayload, text: 'чистка зубов' } });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        reply_text: 'Чистка зубов стоит от 1200 Kč.',
+        booking_result: null,
+        debug: {
+          conversation_mode: 'faq_price',
+          reply_source: 'kb',
+          pending_clarification: { status: 'completed' },
+          runtime_state_saved: { pending_clarification: null, pending_clarification_cleared: true },
+        },
+      });
+      expect(bookingApplyService.calls).toEqual([]);
+      expect(repository.calls.savedState?.state.runtime.pending_clarification).toBeUndefined();
+      expect(repository.calls.savedState?.state.runtime).toMatchObject({
+        pending_clarification_cleared_trace_id: expect.any(String),
+        pending_clarification_cleared_at: '2026-05-17T12:00:00.000Z',
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('keeps pending price clarification and asks service again when no service_interest is extracted', async () => {
+    const repository = new FakeRuntimeTurnRepository({ state: pendingPriceFaqState() });
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'unknown',
+      requested_action: 'clarify',
+      reply_draft: 'Не понял.',
+    }));
+    const bookingApplyService = new FakeBookingApplyService(awaitingConfirmationResponse());
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, {
+      runtimeTurnService: new RuntimeTurnService(repository, aiClient, bookingApplyService, fixedClock),
+    });
+
+    try {
+      const response = await app.inject({ method: 'POST', url: '/runtime/turn', payload: { ...validPayload, text: 'не знаю' } });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        reply_text: 'Подскажите, пожалуйста, какая именно услуга интересует — сориентирую по стоимости.',
+        debug: { policy_decision: { reason: 'pending_price_faq_missing_service_interest' } },
+      });
+      expect(bookingApplyService.calls).toEqual([]);
+      expect(repository.calls.savedState?.state.runtime.pending_clarification).toMatchObject({
+        type: 'faq',
+        faq_topic: 'price',
+        missing_slot: 'service_interest',
+        created_at: '2026-05-16T10:00:00.000Z',
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('treats short price follow-up with no known service as a pending FAQ clarification instead of asking day/time', async () => {
+    const repository = new FakeRuntimeTurnRepository();
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'booking',
+      requested_action: 'ask_slot',
+      faq_topic: 'price',
+      reply_draft: 'Подскажите удобный день и время.',
+    }));
+    const bookingApplyService = new FakeBookingApplyService(awaitingConfirmationResponse());
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, {
+      runtimeTurnService: new RuntimeTurnService(repository, aiClient, bookingApplyService, fixedClock),
+    });
+
+    try {
+      const response = await app.inject({ method: 'POST', url: '/runtime/turn', payload: { ...validPayload, text: 'а цена какая?' } });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json().reply_text).toBe('Подскажите, пожалуйста, какая именно услуга интересует — сориентирую по стоимости.');
+      expect(response.json().reply_text).not.toBe('Подскажите, пожалуйста, удобный день и время.');
+      expect(repository.calls.savedState?.state.runtime.pending_clarification).toMatchObject({
+        type: 'faq',
+        faq_topic: 'price',
+        missing_slot: 'service_interest',
+      });
+      expect(bookingApplyService.calls).toEqual([]);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('answers direct price question with extracted service_interest without asking service again or booking', async () => {
+    const repository = new FakeRuntimeTurnRepository();
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'faq',
+      requested_action: 'answer_faq',
+      faq_topic: 'price',
+      slot_updates: { service_interest: 'чистка' },
+      reply_draft: 'Вигадана ціна 999 Kč.',
+    }));
+    const bookingApplyService = new FakeBookingApplyService(awaitingConfirmationResponse());
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, {
+      runtimeTurnService: new RuntimeTurnService(
+        repository,
+        aiClient,
+        bookingApplyService,
+        fixedClock,
+        new FakeRuntimeKnowledgeRepository({ found: false, count: 0, top_similarity: null, context_text: null, snippets: [] }),
+        new FakeRuntimeEmbeddingClient(makeEmbedding()),
+      ),
+    });
+
+    try {
+      const response = await app.inject({ method: 'POST', url: '/runtime/turn', payload: { ...validPayload, text: 'Сколько стоит чистка?' } });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        reply_text: 'По этой услуге точную стоимость лучше уточнит администратор. Могу передать запрос администратору.',
+        booking_result: null,
+        debug: { conversation_mode: 'faq_price', reply_source: 'safe_fallback' },
+      });
+      expect(response.json().reply_text).not.toBe('Подскажите, пожалуйста, какая именно услуга интересует — сориентирую по стоимости.');
+      expect(bookingApplyService.calls).toEqual([]);
+      expect(repository.calls.savedState).toBeUndefined();
+    } finally {
+      await app.close();
+    }
+  });
+
+
 
   it('uses KB context for grounded FAQ price replies and blocks invented AI prices', async () => {
     const repository = new FakeRuntimeTurnRepository();
@@ -477,6 +683,7 @@ describe('runtime routes', () => {
       conversation_intent: 'faq',
       requested_action: 'answer_faq',
       faq_topic: 'price',
+      slot_updates: { service_interest: 'консультация' },
       reply_draft: 'Вигадана ціна 999 Kč.',
     }));
     const app = Fastify();
@@ -550,8 +757,9 @@ describe('runtime routes', () => {
       expect(response.json()).toMatchObject({
         reply_text: 'Подскажите, пожалуйста, какая именно услуга интересует — сориентирую по стоимости.',
         debug: {
-          reply_source: 'safe_fallback',
-          kb_result: { found: false, count: 0 },
+          reply_source: 'policy',
+          policy_decision: { reason: 'price_faq_missing_service_interest' },
+          runtime_state_saved: { pending_clarification: { type: 'faq', faq_topic: 'price', missing_slot: 'service_interest' } },
         },
       });
     } finally {
@@ -586,10 +794,9 @@ describe('runtime routes', () => {
       expect(response.json()).toMatchObject({
         reply_text: 'Подскажите, пожалуйста, какая именно услуга интересует — сориентирую по стоимости.',
         debug: {
-          reply_source: 'safe_fallback',
-          kb_error: {
-            message: 'Runtime KB retrieval failed; replying with safe fallback where grounding is required.',
-          },
+          reply_source: 'policy',
+          policy_decision: { reason: 'price_faq_missing_service_interest' },
+          runtime_state_saved: { pending_clarification: { type: 'faq', faq_topic: 'price', missing_slot: 'service_interest' } },
         },
       });
     } finally {
@@ -1903,7 +2110,7 @@ describe('runtime routes', () => {
         reply_text: 'Подскажите, пожалуйста, какая именно услуга интересует — сориентирую по стоимости.',
         booking_result: null,
         side_effects: [],
-        debug: { conversation_mode: 'faq_price', reply_source: 'safe_fallback' },
+        debug: { conversation_mode: 'faq_price', reply_source: 'policy' },
       });
     } finally {
       await app.close();
@@ -3904,6 +4111,21 @@ function awaitingSlotChoiceResponse(): BookingApplyResponse {
     ],
     should_notify_admin: false,
     reason: 'slot_options_available',
+  };
+}
+
+
+function pendingPriceFaqState(): Record<string, unknown> {
+  return {
+    runtime: {
+      pending_clarification: {
+        type: 'faq',
+        faq_topic: 'price',
+        missing_slot: 'service_interest',
+        created_at: '2026-05-16T10:00:00.000Z',
+        trace_id: '99999999-9999-4999-9999-999999999999',
+      },
+    },
   };
 }
 

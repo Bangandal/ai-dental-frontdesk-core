@@ -17,6 +17,7 @@ export type RuntimeReplyTemplateKey =
   | 'booking_error'
   | 'faq_address_missing'
   | 'faq_price_missing'
+  | 'faq_price_unavailable'
   | 'faq_insurance_missing'
   | 'post_booking_question'
   | 'multi_patient_request'
@@ -42,6 +43,7 @@ const templates: Record<RuntimeReplyLanguage, Record<RuntimeReplyTemplateKey, st
     booking_error: 'Не удалось автоматически проверить запись. Администратор проверит вручную и свяжется с вами.',
     faq_address_missing: 'Подскажите, пожалуйста, по какому филиалу или адресу сориентировать?',
     faq_price_missing: 'Подскажите, пожалуйста, какая именно услуга интересует — сориентирую по стоимости.',
+    faq_price_unavailable: 'По этой услуге точную стоимость лучше уточнит администратор. Могу передать запрос администратору.',
     faq_insurance_missing: 'Подскажите, пожалуйста, какая у вас страховая или тип покрытия — проверим, можем ли принять.',
     post_booking_question: 'Вашу запись вижу в контексте. Напишите, пожалуйста, какой именно вопрос — помогу или передам администратору.',
     multi_patient_request: 'Для записи нескольких людей лучше оформить отдельные записи, чтобы не перепутать время. Передам запрос администратору, и он поможет согласовать детали.',
@@ -66,6 +68,7 @@ const templates: Record<RuntimeReplyLanguage, Record<RuntimeReplyTemplateKey, st
     booking_error: 'Не вдалося автоматично перевірити запис. Адміністратор перевірить вручну і зв’яжеться з вами.',
     faq_address_missing: 'Підкажіть, будь ласка, щодо якої філії або адреси зорієнтувати?',
     faq_price_missing: 'Підкажіть, будь ласка, яка саме послуга цікавить — зорієнтую по вартості.',
+    faq_price_unavailable: 'Точну вартість цієї послуги краще уточнить адміністратор. Можу передати запит адміністратору.',
     faq_insurance_missing: 'Підкажіть, будь ласка, яка у вас страхова або тип покриття — перевіримо, чи можемо прийняти.',
     post_booking_question: 'Ваш запис бачу в контексті. Напишіть, будь ласка, яке саме питання — допоможу або передам адміністратору.',
     multi_patient_request: 'Для запису кількох людей краще оформити окремі записи, щоб не переплутати час. Передам запит адміністратору, і він допоможе погодити деталі.',
@@ -90,6 +93,7 @@ const templates: Record<RuntimeReplyLanguage, Record<RuntimeReplyTemplateKey, st
     booking_error: 'Objednání se nepodařilo automaticky ověřit. Administrátor to zkontroluje ručně a ozve se vám.',
     faq_address_missing: 'Napište prosím, s jakou pobočkou nebo adresou mám pomoci.',
     faq_price_missing: 'Napište prosím, o jakou službu jde — ověřím cenu.',
+    faq_price_unavailable: 'Přesnou cenu této služby nejlépe ověří administrátor. Mohu předat žádost administrátorovi.',
     faq_insurance_missing: 'Napište prosím pojišťovnu nebo typ krytí — ověříme, zda vás můžeme přijmout.',
     post_booking_question: 'Vaši objednávku vidím v kontextu. Napište prosím konkrétní dotaz — pomohu nebo předám administrátorovi.',
     multi_patient_request: 'Pro objednání více lidí je lepší vytvořit samostatné rezervace, aby se časy nepopletly. Předám požadavek administrátorovi a pomůže domluvit detaily.',
@@ -114,6 +118,7 @@ const templates: Record<RuntimeReplyLanguage, Record<RuntimeReplyTemplateKey, st
     booking_error: 'I could not check the booking automatically. An administrator will review it manually and contact you.',
     faq_address_missing: 'Please tell me which branch or address you need help with.',
     faq_price_missing: 'Please tell me which service you mean — I will check the price information.',
+    faq_price_unavailable: 'For this service, an administrator should confirm the exact price. I can pass the request to an administrator.',
     faq_insurance_missing: 'Please tell me your insurance or coverage type — we will check whether we can accept it.',
     post_booking_question: 'I can see your booking in context. Please send the exact question — I will help or pass it to an administrator.',
     multi_patient_request: 'For booking several people, it is better to create separate appointments so times do not get mixed up. I will pass the request to an administrator to coordinate the details.',
