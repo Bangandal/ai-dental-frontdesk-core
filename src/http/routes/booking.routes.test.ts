@@ -178,6 +178,215 @@ describe('booking apply route', () => {
     }
   });
 
+
+
+  it('propose_options does not return neighboring 15-minute slots as 3 options', async () => {
+    const repository = new InMemoryAppointmentRepository();
+    const slots = [
+      makeUtcSlot('2026-05-20T07:00:00.000Z', 'C4'),
+      makeUtcSlot('2026-05-20T07:15:00.000Z', 'C5'),
+      makeUtcSlot('2026-05-20T07:30:00.000Z', 'C6'),
+      makeUtcSlot('2026-05-20T07:45:00.000Z', 'C7'),
+      makeUtcSlot('2026-05-20T08:00:00.000Z', 'C8'),
+      makeUtcSlot('2026-05-20T10:30:00.000Z', 'C18'),
+    ];
+    const adapter = new MockScheduleAdapter({ slots });
+    const app = await buildTestApp(repository, adapter);
+
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/booking/apply',
+        payload: {
+          ...basePayload,
+          bookingAction: 'propose_options',
+          preferredDateIso: '2026-05-20',
+          timeOfDay: 'any',
+          metadata: { proposal_step_minutes: 60, max_options: 3, proposal_strategy: 'nearest' },
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json().proposed_slots.map((slot: { start_at: string }) => slot.start_at)).toEqual([
+        '2026-05-20T07:00:00.000Z',
+        '2026-05-20T08:00:00.000Z',
+        '2026-05-20T10:30:00.000Z',
+      ]);
+      expect(repository.appointments).toHaveLength(0);
+    } finally {
+      await app.close();
+    }
+  });
+
+
+  it('propose_options defaults to spread strategy for representative full-day options', async () => {
+    const adapter = new MockScheduleAdapter({ slots: makeUtcSlotsEveryMinutes('2026-05-20', 7, 18, 15) });
+    const app = await buildTestApp(new InMemoryAppointmentRepository(), adapter);
+
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/booking/apply',
+        payload: {
+          ...basePayload,
+          bookingAction: 'propose_options',
+          preferredDateIso: '2026-05-20',
+          timeOfDay: 'any',
+          metadata: { proposal_step_minutes: 60, max_options: 3 },
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json().proposed_slots.map((slot: { start_at: string }) => slot.start_at)).toEqual([
+        '2026-05-20T07:00:00.000Z',
+        '2026-05-20T12:30:00.000Z',
+        '2026-05-20T18:00:00.000Z',
+      ]);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('propose_options does not return past slots when preferredDateIso is null and metadata.current_time_iso is provided', async () => {
+    const adapter = new MockScheduleAdapter({
+      slots: [
+        makeUtcSlot('2026-05-20T08:00:00.000Z', 'C4'),
+        makeUtcSlot('2026-05-21T08:00:00.000Z', 'D4'),
+        makeUtcSlot('2026-05-22T08:00:00.000Z', 'E4'),
+      ],
+    });
+    const app = await buildTestApp(new InMemoryAppointmentRepository(), adapter);
+
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/booking/apply',
+        payload: {
+          ...basePayload,
+          bookingAction: 'propose_options',
+          preferredDateIso: null,
+          timeOfDay: 'any',
+          metadata: { current_time_iso: '2026-05-21T07:00:00.000Z', search_window_days: 2 },
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(adapter.lastAvailabilityRequest).toMatchObject({
+        from: '2026-05-21T07:00:00.000Z',
+        to: '2026-05-23T07:00:00.000Z',
+      });
+      expect(response.json().proposed_slots.map((slot: { start_at: string }) => slot.start_at)).toEqual([
+        '2026-05-21T08:00:00.000Z',
+      ]);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('propose_options with preferredDateIso today filters out times before current_time_iso', async () => {
+    const adapter = new MockScheduleAdapter({
+      slots: [
+        makeUtcSlot('2026-05-20T08:00:00.000Z', 'C4'),
+        makeUtcSlot('2026-05-20T12:00:00.000Z', 'C20'),
+        makeUtcSlot('2026-05-20T14:00:00.000Z', 'C28'),
+      ],
+    });
+    const app = await buildTestApp(new InMemoryAppointmentRepository(), adapter);
+
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/booking/apply',
+        payload: {
+          ...basePayload,
+          bookingAction: 'propose_options',
+          preferredDateIso: '2026-05-20',
+          timeOfDay: 'any',
+          metadata: { current_time_iso: '2026-05-20T10:00:00.000Z', current_clinic_date_iso: '2026-05-20' },
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(adapter.lastAvailabilityRequest).toMatchObject({
+        from: '2026-05-20T10:00:00.000Z',
+        to: '2026-05-21T00:00:00.000Z',
+      });
+      expect(response.json().proposed_slots.map((slot: { start_at: string }) => slot.start_at)).toEqual([
+        '2026-05-20T12:00:00.000Z',
+        '2026-05-20T14:00:00.000Z',
+      ]);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('propose_options with a future date still returns options', async () => {
+    const adapter = new MockScheduleAdapter({ slots: [makeUtcSlot('2026-05-22T08:00:00.000Z', 'E4')] });
+    const app = await buildTestApp(new InMemoryAppointmentRepository(), adapter);
+
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/booking/apply',
+        payload: {
+          ...basePayload,
+          bookingAction: 'propose_options',
+          preferredDateIso: '2026-05-22',
+          timeOfDay: 'any',
+          metadata: { current_time_iso: '2026-05-20T10:00:00.000Z', current_clinic_date_iso: '2026-05-20' },
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(adapter.lastAvailabilityRequest).toMatchObject({
+        from: '2026-05-22T00:00:00.000Z',
+        to: '2026-05-23T00:00:00.000Z',
+      });
+      expect(response.json().proposed_slots).toEqual([expect.objectContaining({ start_at: '2026-05-22T08:00:00.000Z' })]);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('propose_slot exact behavior does not thin neighboring candidates', async () => {
+    const adapter = new MockScheduleAdapter({
+      slots: [
+        makeUtcSlot('2026-05-20T07:00:00.000Z', 'C4'),
+        makeUtcSlot('2026-05-20T07:15:00.000Z', 'C5'),
+        makeUtcSlot('2026-05-20T07:30:00.000Z', 'C6'),
+      ],
+    });
+    const app = await buildTestApp(new InMemoryAppointmentRepository(), adapter);
+
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/booking/apply',
+        payload: {
+          ...basePayload,
+          bookingAction: 'propose_slot',
+          preferredDateIso: '2026-05-20',
+          timeOfDay: 'any',
+          selectedSlotStartAt: '2026-05-20T07:15:00.000Z',
+          selectedSlotEndAt: '2026-05-20T07:45:00.000Z',
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        booking_status: 'awaiting_patient_confirmation',
+        proposed_slot: { start_at: '2026-05-20T07:15:00.000Z' },
+      });
+      expect(response.json().proposed_slots.map((slot: { start_at: string }) => slot.start_at)).toEqual([
+        '2026-05-20T07:00:00.000Z',
+        '2026-05-20T07:15:00.000Z',
+        '2026-05-20T07:30:00.000Z',
+      ]);
+    } finally {
+      await app.close();
+    }
+  });
+
   it('selected available slot re-checks availability and creates a hold for exact selected slot only', async () => {
     const repository = new InMemoryAppointmentRepository();
     const adapter = new MockScheduleAdapter({ slots: [morningSlot, afternoonSlot] });
@@ -740,6 +949,33 @@ class InMemoryAppointmentRepository implements AppointmentRepository {
 
     return appointment;
   }
+}
+
+function makeUtcSlotsEveryMinutes(dateIso: string, startHour: number, endHour: number, stepMinutes: number): ScheduleSlot[] {
+  const slots: ScheduleSlot[] = [];
+  const year = Number(dateIso.slice(0, 4));
+  const month = Number(dateIso.slice(5, 7)) - 1;
+  const day = Number(dateIso.slice(8, 10));
+  const start = Date.UTC(year, month, day, startHour, 0, 0, 0);
+  const end = Date.UTC(year, month, day, endHour, 0, 0, 0);
+
+  for (let time = start, index = 1; time <= end; time += stepMinutes * 60_000, index += 1) {
+    slots.push(makeUtcSlot(new Date(time).toISOString(), `C${index}`));
+  }
+
+  return slots;
+}
+
+function makeUtcSlot(startAt: string, cellRange: string): ScheduleSlot {
+  const start = new Date(startAt);
+
+  return {
+    startAt,
+    endAt: new Date(start.getTime() + 30 * 60_000).toISOString(),
+    timezone: 'UTC',
+    provider: 'google_sheets',
+    metadata: { cell_range: cellRange, sheet_name: 'Schedule' },
+  };
 }
 
 function stringMetadata(value: unknown): string | null {

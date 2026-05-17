@@ -7,6 +7,7 @@ import type {
   AppointmentRepository,
   ExternalAppointmentRecord,
 } from '../appointments/appointmentRepository.js';
+import { selectHumanFriendlySlotOptions } from './selectHumanFriendlySlotOptions.js';
 
 export type BookingAction = 'none' | 'propose_slot' | 'propose_options' | 'confirm_slot' | 'cancel_hold';
 export type TimeOfDay = 'morning' | 'afternoon' | 'evening' | 'any';
@@ -174,7 +175,12 @@ export class BookingApplyService {
       booking_action: 'propose_options',
       booking_status: 'awaiting_slot_choice',
       proposed_slot: null,
-      proposed_slots: candidateSlots.slice(0, 3).map((slot, index) => ({
+      proposed_slots: selectHumanFriendlySlotOptions(candidateSlots, {
+        maxOptions: readSaneIntegerMetadata(request.metadata, 'max_options', 3),
+        proposalStepMinutes: readSaneIntegerMetadata(request.metadata, 'proposal_step_minutes', 60),
+        fallbackProposalStepMinutes: 30,
+        strategy: readProposalStrategyMetadata(request.metadata),
+      }).map((slot, index) => ({
         ...toBookingSlotPayload(slot, request.serviceInterest ?? null),
         option_id: String(index + 1),
         provider_metadata: slot.metadata,
@@ -226,7 +232,7 @@ export class BookingApplyService {
   private async findCandidateSlots(request: BookingApplyRequest): Promise<ScheduleSlot[]> {
     const availability = await this.appointmentLifecycle.checkAvailability({
       clinicId: request.clinicId,
-      ...buildAvailabilityRange(request.preferredDateIso),
+      ...buildAvailabilityRange(request),
       durationMinutes: request.durationMinutes,
       service: request.serviceInterest ?? undefined,
     });
@@ -235,8 +241,11 @@ export class BookingApplyService {
       return [];
     }
 
+    const effectiveFrom = buildEffectiveFrom(request);
+
     return availability.data.slots.filter((slot) => (
-      isSlotInRequestedTimeOfDay(slot, request.timeOfDay)
+      isSlotOnOrAfterEffectiveFrom(slot, effectiveFrom)
+      && isSlotInRequestedTimeOfDay(slot, request.timeOfDay)
       && isSlotInRequestedTimeConstraints(slot, request)
     ));
   }
@@ -335,18 +344,62 @@ function appointmentFromLifecycleError(
   return toBookingAppointmentPayload({ ...fallback, status }, fallback.service ?? null);
 }
 
-function buildAvailabilityRange(preferredDateIso: string | null | undefined): { from?: string; to?: string } {
-  if (preferredDateIso === null || preferredDateIso === undefined) {
-    return {};
+function buildAvailabilityRange(request: BookingApplyRequest): { from?: string; to?: string } {
+  const effectiveFrom = buildEffectiveFrom(request);
+
+  if (request.preferredDateIso === null || request.preferredDateIso === undefined) {
+    if (request.bookingAction !== 'propose_options' || effectiveFrom === undefined) {
+      return {};
+    }
+
+    const from = new Date(effectiveFrom);
+    const searchWindowDays = readClampedNumberMetadata(request.metadata, 'search_window_days', 14, 1, 30);
+    const to = new Date(from.getTime() + searchWindowDays * 24 * 60 * 60_000);
+
+    return {
+      from: from.toISOString(),
+      to: to.toISOString(),
+    };
   }
 
-  const from = new Date(`${preferredDateIso}T00:00:00.000Z`);
-  const to = new Date(from.getTime() + 24 * 60 * 60_000);
+  const from = new Date(`${request.preferredDateIso}T00:00:00.000Z`);
+  const dateTo = new Date(from.getTime() + 24 * 60 * 60_000);
 
   return {
-    from: from.toISOString(),
-    to: to.toISOString(),
+    from: effectiveFrom ?? from.toISOString(),
+    to: dateTo.toISOString(),
   };
+}
+
+function buildEffectiveFrom(request: BookingApplyRequest): string | undefined {
+  if (request.bookingAction !== 'propose_options') {
+    return undefined;
+  }
+
+  const metadataNow = readValidIsoMetadata(request.metadata, 'current_time_iso') ?? new Date().toISOString();
+
+  if (request.preferredDateIso === null || request.preferredDateIso === undefined) {
+    return metadataNow;
+  }
+
+  const currentClinicDateIso = readStringMetadata(request.metadata, 'current_clinic_date_iso') ?? metadataNow.slice(0, 10);
+
+  if (request.preferredDateIso === currentClinicDateIso) {
+    return metadataNow;
+  }
+
+  return undefined;
+}
+
+function isSlotOnOrAfterEffectiveFrom(slot: ScheduleSlot, effectiveFrom: string | undefined): boolean {
+  if (effectiveFrom === undefined) {
+    return true;
+  }
+
+  const slotStartMs = Date.parse(slot.startAt);
+  const effectiveFromMs = Date.parse(effectiveFrom);
+
+  return Number.isFinite(slotStartMs) && Number.isFinite(effectiveFromMs) && slotStartMs >= effectiveFromMs;
 }
 
 function buildDedupeKey(request: BookingApplyRequest, slot: ScheduleSlot): string {
@@ -494,6 +547,58 @@ function appointmentToScheduleSlot(appointment: ExternalAppointmentRecord): Sche
     provider: appointment.externalProvider,
     metadata: providerMetadata,
   };
+}
+
+function readValidIsoMetadata(metadata: Record<string, unknown>, key: string): string | undefined {
+  const value = readStringMetadata(metadata, key);
+
+  if (value === undefined) {
+    return undefined;
+  }
+
+  const time = Date.parse(value);
+
+  if (!Number.isFinite(time)) {
+    return undefined;
+  }
+
+  return value;
+}
+
+function readProposalStrategyMetadata(metadata: Record<string, unknown>): 'nearest' | 'spread' {
+  const value = metadata.proposal_strategy;
+
+  if (value === 'nearest' || value === 'spread') {
+    return value;
+  }
+
+  return 'spread';
+}
+
+function readSaneIntegerMetadata(metadata: Record<string, unknown>, key: string, fallback: number): number {
+  const value = metadata[key];
+
+  if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0 || value > 10) {
+    return fallback;
+  }
+
+  return value;
+}
+
+function readClampedNumberMetadata(
+  metadata: Record<string, unknown>,
+  key: string,
+  fallback: number,
+  min: number,
+  max: number,
+): number {
+  const value = metadata[key];
+
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return fallback;
+  }
+
+  return Math.min(max, Math.max(min, value));
 }
 
 function readStoredSlot(meta: Record<string, unknown>): ScheduleSlot | undefined {
