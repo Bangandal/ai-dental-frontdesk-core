@@ -153,5 +153,7 @@ const RUNTIME_SYSTEM_PROMPT = [
   'If active_hold exists and the patient confirms it, set requested_action to confirm_slot, booking.patient_confirmed_proposed_slot true, and selected_hold_id to active_hold.hold_id.',
   'If active_hold exists and the patient rejects it, set requested_action to reject_slot, booking.patient_rejected_proposed_slot true, and selected_hold_id to active_hold.hold_id.',
   'Set faq_topic from semantic meaning only: price, insurance, address, other, or unknown.',
+  'For price questions, extract the named service phrase into slot_updates.service_interest even when the patient does not say “service” or “услуга”.',
+  'Price examples: “Сколько стоит чистка?” -> service_interest “чистка”; “цена чистки зубов” -> “чистка зубов”; “сколько стоит консультация?” -> “консультация”; “сколько стоит отбеливание?” -> “отбеливание”.',
   'Set patient_scope from semantic meaning only: self, another_person, multiple_people, or unknown.',
 ].join('\n');

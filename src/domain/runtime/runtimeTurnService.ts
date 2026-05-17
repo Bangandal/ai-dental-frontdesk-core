@@ -424,12 +424,12 @@ export class RuntimeTurnService {
       const pendingPriceNeedsService = pendingClarification !== null && serviceInterest === null;
       const newPriceNeedsService = pendingClarification === null && isPriceFaqMissingService(aiOutput);
 
-      if (pendingPriceNeedsService || newPriceNeedsService) {
+      if (pendingPriceNeedsService) {
         const policyDecision: RuntimePolicyDecision = {
           next_action: 'clarify_faq_service_interest',
           should_call_booking: false,
           booking_request: null,
-          reason: pendingPriceNeedsService ? 'pending_price_faq_missing_service_interest' : 'price_faq_missing_service_interest',
+          reason: 'pending_price_faq_missing_service_interest',
           warnings: [],
           reply_text: runtimeReplyTemplate(responseLanguage, 'faq_price_missing'),
         };
@@ -559,6 +559,11 @@ export class RuntimeTurnService {
             traceId,
             debug,
           });
+          knowledgeReplyText = applyPriceAnswerQualityGuard({
+            aiOutput,
+            knowledgeReplyText,
+            debug,
+          });
           const replyDecision = buildRuntimeReplyBehavior({
             conversation_mode: conversationMode,
             booking_result: bookingResult,
@@ -577,6 +582,33 @@ export class RuntimeTurnService {
           replySideEffects = replyDecision.side_effects;
           debug.conversation_mode = conversationMode;
           debug.reply_source = replySource;
+
+          if (newPriceNeedsService && replySource !== 'kb') {
+            const clarifyPolicyDecision: RuntimePolicyDecision = {
+              next_action: 'clarify_faq_service_interest',
+              should_call_booking: false,
+              booking_request: null,
+              reason: 'price_faq_missing_service_interest',
+              warnings: [],
+              reply_text: runtimeReplyTemplate(responseLanguage, 'faq_price_missing'),
+            };
+            policyDecisionForReply = clarifyPolicyDecision;
+            debug.policy_decision = clarifyPolicyDecision;
+            conversationMode = 'faq_price';
+            replyText = runtimeReplyTemplate(responseLanguage, 'faq_price_missing');
+            replySource = 'policy';
+            replySideEffects = [];
+            debug.conversation_mode = conversationMode;
+            debug.reply_source = replySource;
+            await this.persistPendingPriceFaqClarification({
+              convoState,
+              clinicId: clinic.id,
+              contactId: contact.id,
+              traceId,
+              createdAt: turnStartedAt.toISOString(),
+              debug,
+            });
+          }
         }
 
         if (pendingClarification !== null && serviceInterest !== null) {
@@ -1069,6 +1101,206 @@ function forcePriceFaqCompletion(aiOutput: RuntimeAIOutput): RuntimeAIOutput {
       selected_hold_id: null,
     },
   };
+}
+
+function applyPriceAnswerQualityGuard(input: {
+  aiOutput: RuntimeAIOutput;
+  knowledgeReplyText: string | null;
+  debug: Record<string, unknown>;
+}): string | null {
+  if (input.aiOutput.faq_topic !== 'price') {
+    return input.knowledgeReplyText;
+  }
+
+  const quality = evaluatePriceAnswerQuality(input.knowledgeReplyText);
+  input.debug.price_answer_quality = quality;
+
+  return quality.accepted ? input.knowledgeReplyText : null;
+}
+
+interface PriceAnswerQualityResult {
+  accepted: boolean;
+  reason: string;
+}
+
+function evaluatePriceAnswerQuality(value: string | null): PriceAnswerQualityResult {
+  const text = readString(value);
+
+  if (text === null) {
+    return { accepted: false, reason: 'empty' };
+  }
+
+  if (text.length < 8) {
+    return { accepted: false, reason: 'too_short' };
+  }
+
+  if (hasExplicitFreeSignal(text)) {
+    return { accepted: true, reason: 'explicit_free' };
+  }
+
+  if (hasDigitCurrencySignal(text)) {
+    return { accepted: true, reason: 'digit_currency' };
+  }
+
+  if (hasMinPriceSignal(text)) {
+    return { accepted: true, reason: 'min_price' };
+  }
+
+  if (hasRangePriceSignal(text)) {
+    return { accepted: true, reason: 'range_price' };
+  }
+
+  return { accepted: false, reason: 'no_price_signal' };
+}
+
+function hasExplicitFreeSignal(text: string): boolean {
+  const lower = text.toLocaleLowerCase();
+
+  return lower.includes('бесплат')
+    || lower.includes('безкоштов')
+    || lower.includes('zdarma')
+    || hasStandaloneWord(lower, 'free');
+}
+
+function hasDigitCurrencySignal(text: string): boolean {
+  const lower = text.toLocaleLowerCase();
+  const currencySymbols = ['kč', 'czk', 'eur', '€', '$', 'uah', 'грн', 'крон', 'кроны', 'korun'];
+
+  return currencySymbols.some((currency) => hasDigitNearToken(lower, currency));
+}
+
+function hasMinPriceSignal(text: string): boolean {
+  const lower = text.toLocaleLowerCase();
+  const minMarkers = ['от', 'від', 'from'];
+
+  return minMarkers.some((marker) => hasMarkerBeforeNumber(lower, marker));
+}
+
+function hasRangePriceSignal(text: string): boolean {
+  const normalized = text.replace(/[–—]/gu, '-');
+
+  for (let index = 0; index < normalized.length; index += 1) {
+    if (normalized[index] !== '-') {
+      continue;
+    }
+
+    const before = readAdjacentNumber(normalized, index, -1);
+    const after = readAdjacentNumber(normalized, index, 1);
+
+    if (before !== null && after !== null) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function hasStandaloneWord(text: string, word: string): boolean {
+  const index = text.indexOf(word);
+
+  if (index === -1) {
+    return false;
+  }
+
+  const before = index === 0 ? ' ' : text[index - 1];
+  const afterIndex = index + word.length;
+  const after = afterIndex >= text.length ? ' ' : text[afterIndex];
+
+  return !isAsciiLetter(before) && !isAsciiLetter(after);
+}
+
+function hasDigitNearToken(text: string, token: string): boolean {
+  let fromIndex = 0;
+
+  while (fromIndex < text.length) {
+    const tokenIndex = text.indexOf(token, fromIndex);
+
+    if (tokenIndex === -1) {
+      return false;
+    }
+
+    const start = Math.max(0, tokenIndex - 16);
+    const end = Math.min(text.length, tokenIndex + token.length + 16);
+
+    if (containsDigit(text.slice(start, end))) {
+      return true;
+    }
+
+    fromIndex = tokenIndex + token.length;
+  }
+
+  return false;
+}
+
+function hasMarkerBeforeNumber(text: string, marker: string): boolean {
+  let fromIndex = 0;
+
+  while (fromIndex < text.length) {
+    const markerIndex = text.indexOf(marker, fromIndex);
+
+    if (markerIndex === -1) {
+      return false;
+    }
+
+    const before = markerIndex === 0 ? ' ' : text[markerIndex - 1];
+    const afterIndex = markerIndex + marker.length;
+    const after = afterIndex >= text.length ? ' ' : text[afterIndex];
+
+    if (!isLetterOrDigit(before) && !isLetterOrDigit(after) && containsDigit(text.slice(afterIndex, afterIndex + 16))) {
+      return true;
+    }
+
+    fromIndex = markerIndex + marker.length;
+  }
+
+  return false;
+}
+
+function readAdjacentNumber(text: string, separatorIndex: number, direction: -1 | 1): string | null {
+  let index = separatorIndex + direction;
+
+  while (index >= 0 && index < text.length && text[index] === ' ') {
+    index += direction;
+  }
+
+  let digits = '';
+
+  while (index >= 0 && index < text.length && isDigit(text[index])) {
+    digits = direction === -1 ? `${text[index]}${digits}` : `${digits}${text[index]}`;
+    index += direction;
+  }
+
+  return digits.length > 0 ? digits : null;
+}
+
+function containsDigit(text: string): boolean {
+  for (const char of text) {
+    if (isDigit(char)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function isDigit(char: string): boolean {
+  return char >= '0' && char <= '9';
+}
+
+function isAsciiLetter(char: string): boolean {
+  const lower = char.toLocaleLowerCase();
+
+  return lower >= 'a' && lower <= 'z';
+}
+
+function isLetterOrDigit(char: string): boolean {
+  const lower = char.toLocaleLowerCase();
+
+  return (lower >= 'a' && lower <= 'z')
+    || (lower >= 'а' && lower <= 'я')
+    || (lower >= 'ё' && lower <= 'ё')
+    || (lower >= 'і' && lower <= 'ї')
+    || isDigit(lower);
 }
 
 
