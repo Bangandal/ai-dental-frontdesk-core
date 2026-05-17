@@ -2794,8 +2794,8 @@ describe('runtime routes', () => {
         side_effects: [],
       });
       expect(response.json().reply_text).toContain('Есть несколько вариантов:');
-      expect(response.json().reply_text).toContain('1.');
-      expect(response.json().reply_text).toContain('2.');
+      expect(response.json().reply_text).toContain('1. 20.05.2026, 10:00');
+      expect(response.json().reply_text).toContain('2. 20.05.2026, 12:30');
       expect(repository.calls.notification).toBeUndefined();
       expect(repository.calls.savedState?.state.runtime).toMatchObject({
         awaiting_slot_choice: true,

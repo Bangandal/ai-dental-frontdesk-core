@@ -65,7 +65,7 @@ export function buildReplyFromBookingResult(bookingResult: BookingApplyResponse,
   };
 }
 
-function buildSlotOptionsReply(slots: Array<{ label: string; start_at: string }>, language: RuntimeReplyLanguage): string {
+function buildSlotOptionsReply(slots: Array<{ label: string; start_at: string; provider_metadata?: Record<string, unknown> }>, language: RuntimeReplyLanguage): string {
   const header = {
     ru: 'Есть несколько вариантов:',
     uk: 'Є кілька варіантів:',
@@ -83,7 +83,11 @@ function buildSlotOptionsReply(slots: Array<{ label: string; start_at: string }>
   return `${header}\n${lines.join('\n')}\n\n${question}`;
 }
 
-function formatSlotOption(slot: { label: string; start_at: string }, language: RuntimeReplyLanguage): string {
+function formatSlotOption(slot: { label: string; start_at: string; provider_metadata?: Record<string, unknown> }, language: RuntimeReplyLanguage): string {
+  if (slot.label.trim() !== '') {
+    return slot.label;
+  }
+
   const date = new Date(slot.start_at);
 
   if (Number.isNaN(date.getTime())) {
@@ -92,10 +96,16 @@ function formatSlotOption(slot: { label: string; start_at: string }, language: R
 
   const locale = language === 'en' ? 'en-GB' : language === 'cs' ? 'cs-CZ' : language === 'uk' ? 'uk-UA' : 'ru-RU';
   return new Intl.DateTimeFormat(locale, {
-    timeZone: 'Europe/Prague',
+    timeZone: readSlotTimezone(slot.provider_metadata) ?? 'UTC',
     day: '2-digit',
     month: '2-digit',
     hour: '2-digit',
     minute: '2-digit',
   }).format(date);
+}
+
+function readSlotTimezone(providerMetadata: Record<string, unknown> | undefined): string | null {
+  const timezone = providerMetadata?.timezone;
+
+  return typeof timezone === 'string' && timezone.trim() !== '' ? timezone : null;
 }
