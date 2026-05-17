@@ -141,6 +141,28 @@ describe('RuntimeAvailabilityPlanner', () => {
 
 
 
+
+  it('plans direct exact_slot as propose_slot with exactTime', () => {
+    const result = planRuntimeAvailability({
+      ...basePlannerInput({ current_clinic_date_iso: '2026-05-17' }),
+      ai_output: validAIOutput({
+        availability_query: availabilityQuery({ search_type: 'exact_slot', date_iso: '2026-05-18', exact_time: '14:00' }),
+      }),
+    });
+
+    expect(result).toMatchObject({
+      should_call_booking: true,
+      booking_action: 'propose_slot',
+      reason: 'availability_exact_slot',
+      booking_request: {
+        bookingAction: 'propose_slot',
+        preferredDateIso: '2026-05-18',
+        exactTime: '14:00',
+        metadata: { policy_action: 'propose_slot', exact_time: '14:00' },
+      },
+    });
+  });
+
   it('blocks specific_date in the past before booking', () => {
     const result = planRuntimeAvailability({
       ...basePlannerInput({ current_clinic_date_iso: '2026-05-17' }),

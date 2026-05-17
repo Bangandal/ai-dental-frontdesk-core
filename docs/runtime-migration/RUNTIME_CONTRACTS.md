@@ -172,4 +172,6 @@ Runtime stores the latest offered options in `core.convo_state.state_json.runtim
 }
 ```
 
-`bookingAction = propose_options` checks real availability and returns up to 3 `proposed_slots` with `booking_status = awaiting_slot_choice`. It does not create holds, write external calendar records, or notify admin. After the patient chooses one option, AI fills typed `slot_selection`; backend resolves it against this stored memory, re-checks the exact selected slot, and only then calls `propose_slot` to create the single hold with `booking_status = awaiting_patient_confirmation`.
+`bookingAction = propose_options` checks real availability for broad availability requests and returns up to 3 `proposed_slots` with `booking_status = awaiting_slot_choice`. It does not create holds, write external calendar records, or notify admin. Direct `exact_slot` requests with a valid `date_iso` and `exact_time` use `bookingAction = propose_slot` immediately, creating only one hold when the exact slot is available and returning `awaiting_patient_confirmation` rather than `awaiting_slot_choice`.
+
+After the patient chooses an offered option, AI fills typed `slot_selection`; backend resolves it against this stored memory, re-checks the exact selected slot, and only then calls `propose_slot` to create the single hold with `booking_status = awaiting_patient_confirmation`. Once a selected option is consumed, runtime clears `runtime.last_proposed_slots` and sets `runtime.awaiting_slot_choice = false` for both successful holds and stale/no-slots outcomes.

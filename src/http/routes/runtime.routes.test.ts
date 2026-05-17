@@ -1219,10 +1219,13 @@ describe('runtime routes', () => {
 
       expect(response.statusCode).toBe(200);
       expect(bookingApplyService.calls[0]).toMatchObject({
+        bookingAction: 'propose_slot',
         preferredDateIso: '2026-05-18',
         exactTime: '14:00',
-        metadata: { exact_time: '14:00' },
+        metadata: { exact_time: '14:00', policy_action: 'propose_slot' },
       });
+      expect(response.json().booking_result).toMatchObject({ booking_status: 'awaiting_patient_confirmation' });
+      expect(repository.calls.savedState).toBeUndefined();
     } finally {
       await app.close();
     }
@@ -1271,7 +1274,9 @@ describe('runtime routes', () => {
 
       expect(response.statusCode).toBe(200);
       expect(bookingApplyService.calls).toHaveLength(1);
-      expect(bookingApplyService.calls[0]).toMatchObject({ preferredDateIso: '2026-05-18', exactTime: '14:00' });
+      expect(bookingApplyService.calls[0]).toMatchObject({ bookingAction: 'propose_slot', preferredDateIso: '2026-05-18', exactTime: '14:00' });
+      expect(response.json().booking_result).toMatchObject({ booking_status: 'awaiting_patient_confirmation' });
+      expect(repository.calls.savedState).toBeUndefined();
     } finally {
       await app.close();
     }
@@ -2831,6 +2836,54 @@ describe('runtime routes', () => {
         selectedSlotEndAt: '2026-05-20T11:00:00.000Z',
       });
       expect(response.json().booking_result).toMatchObject({ booking_status: 'awaiting_patient_confirmation' });
+      expect(repository.calls.savedState?.state.runtime).toMatchObject({ awaiting_slot_choice: false, last_proposed_slots: [] });
+    } finally {
+      await app.close();
+    }
+  });
+
+
+
+  it('selected stale option clears proposed slot memory after no_slots response', async () => {
+    const repository = new FakeRuntimeTurnRepository({ state: proposedSlotsState() });
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'slot_selection',
+      requested_action: 'select_slot',
+      slot_selection: { selected_option_id: '2', selection_confidence: 'high' },
+    }));
+    const bookingApplyService = new FakeBookingApplyService(noSlotsResponse('stale_slot_unavailable'));
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, { runtimeTurnService: new RuntimeTurnService(repository, aiClient, bookingApplyService) });
+
+    try {
+      const response = await app.inject({ method: 'POST', url: '/runtime/turn', payload: validPayload });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json().booking_result).toMatchObject({ booking_status: 'no_slots', reason: 'stale_slot_unavailable' });
+      expect(repository.calls.savedState?.state.runtime).toMatchObject({ awaiting_slot_choice: false, last_proposed_slots: [] });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('selection after cleared proposed slot memory asks to check availability again', async () => {
+    const repository = new FakeRuntimeTurnRepository({ state: { runtime: { awaiting_slot_choice: false, last_proposed_slots: [] } } });
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'slot_selection',
+      requested_action: 'select_slot',
+      slot_selection: { selected_option_id: '2', selection_confidence: 'high' },
+    }));
+    const bookingApplyService = new FakeBookingApplyService(awaitingConfirmationResponse());
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, { runtimeTurnService: new RuntimeTurnService(repository, aiClient, bookingApplyService) });
+
+    try {
+      const response = await app.inject({ method: 'POST', url: '/runtime/turn', payload: validPayload });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json().reply_text).toContain('проверю свежие свободные варианты');
+      expect(bookingApplyService.calls).toHaveLength(0);
+      expect(repository.calls.savedState).toBeUndefined();
     } finally {
       await app.close();
     }
@@ -3242,7 +3295,7 @@ function proposedSlotsState(options: { ambiguousTime?: boolean } = {}): Record<s
   };
 }
 
-function noSlotsResponse(): BookingApplyResponse {
+function noSlotsResponse(reason: 'no_slots_available' | 'stale_slot_unavailable' = 'no_slots_available'): BookingApplyResponse {
   return {
     booking_action: 'propose_slot',
     booking_status: 'no_slots',
@@ -3250,7 +3303,7 @@ function noSlotsResponse(): BookingApplyResponse {
     proposed_slots: [],
     should_notify_admin: false,
     reply_text_override: 'Свободных слотов по вашему запросу сейчас не нашёл. Подскажите другой день или время.',
-    reason: 'no_slots_available',
+    reason,
   };
 }
 

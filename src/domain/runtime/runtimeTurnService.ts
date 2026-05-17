@@ -629,6 +629,9 @@ export class RuntimeTurnService {
     debug: Record<string, unknown>;
   }): Promise<void> {
     if (input.bookingResult.booking_status !== 'awaiting_slot_choice') {
+      if (shouldConsumeRuntimeSlotMemory(input.bookingRequest, input.bookingResult)) {
+        await this.consumeRuntimeSlotMemory(input);
+      }
       return;
     }
 
@@ -666,6 +669,46 @@ export class RuntimeTurnService {
       input.convoState.state = saved.state;
       input.convoState.stateVersion = saved.stateVersion;
       input.debug.runtime_state_saved = { awaiting_slot_choice: true, proposed_slots_count: proposedSlots.length };
+    } catch (error) {
+      input.debug.runtime_state_save_error = formatOutboundPersistenceError(error);
+    }
+  }
+
+
+  private async consumeRuntimeSlotMemory(input: {
+    convoState: RuntimeConvoStateRecord;
+    clinicId: string;
+    contactId: string;
+    bookingResult: BookingApplyResponse;
+    bookingRequest: BookingApplyRequest;
+    traceId: string;
+    createdAt: string;
+    debug: Record<string, unknown>;
+  }): Promise<void> {
+    const nextState = {
+      ...input.convoState.state,
+      runtime: {
+        ...readRecord(input.convoState.state.runtime),
+        last_proposed_slots: [],
+        last_proposed_slots_consumed_trace_id: input.traceId,
+        last_proposed_slots_consumed_at: input.createdAt,
+        awaiting_slot_choice: false,
+      },
+    };
+
+    try {
+      const saved = await this.repository.saveConvoState({
+        clinicId: input.clinicId,
+        contactId: input.contactId,
+        state: nextState,
+      });
+      input.convoState.state = saved.state;
+      input.convoState.stateVersion = saved.stateVersion;
+      input.debug.runtime_state_saved = {
+        awaiting_slot_choice: false,
+        proposed_slots_count: 0,
+        consumed_booking_status: input.bookingResult.booking_status,
+      };
     } catch (error) {
       input.debug.runtime_state_save_error = formatOutboundPersistenceError(error);
     }
@@ -815,6 +858,17 @@ export class RuntimeTurnService {
   }
 }
 
+
+
+function shouldConsumeRuntimeSlotMemory(bookingRequest: BookingApplyRequest, bookingResult: BookingApplyResponse): boolean {
+  const policyAction = readRecord(bookingRequest.metadata).policy_action;
+
+  if (policyAction !== 'select_slot') {
+    return false;
+  }
+
+  return bookingResult.booking_status === 'awaiting_patient_confirmation' || bookingResult.booking_status === 'no_slots';
+}
 
 interface SlotChoicePolicyDecision extends RuntimePolicyDecision {
   slot_choice_resolution: Record<string, unknown>;
