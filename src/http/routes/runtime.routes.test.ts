@@ -1131,7 +1131,7 @@ describe('runtime routes', () => {
     }));
     const bookingApplyService = new FakeBookingApplyService(awaitingConfirmationResponse());
     const app = Fastify();
-    await app.register(registerRuntimeRoutes, { runtimeTurnService: new RuntimeTurnService(repository, aiClient, bookingApplyService) });
+    await app.register(registerRuntimeRoutes, { runtimeTurnService: new RuntimeTurnService(repository, aiClient, bookingApplyService, () => new Date('2026-05-17T10:00:00.000Z')) });
 
     try {
       const response = await app.inject({ method: 'POST', url: '/runtime/turn', payload: { ...validPayload, text: 'когда есть свободно?' } });
@@ -1143,7 +1143,13 @@ describe('runtime routes', () => {
         serviceInterest: 'консультация',
         preferredDateIso: null,
         timeOfDay: 'any',
-        metadata: { availability_query: { search_type: 'nearest_available' } },
+        metadata: {
+          availability_query: { search_type: 'nearest_available' },
+          current_time_iso: '2026-05-17T10:00:00.000Z',
+          search_window_days: 14,
+          proposal_step_minutes: 60,
+          max_options: 3,
+        },
       });
       expect(response.json()).toMatchObject({
         booking_result: { booking_status: 'awaiting_patient_confirmation' },

@@ -368,6 +368,8 @@ function buildPlannerMetadata(
     time_window: query.time_window,
     exact_time: query.exact_time,
     search_window_days: query.search_type === 'nearest_available' || query.search_type === 'time_constraint' ? 14 : null,
+    proposal_step_minutes: bookingAction === 'propose_options' ? 60 : null,
+    max_options: bookingAction === 'propose_options' ? 3 : null,
   };
 }
 
