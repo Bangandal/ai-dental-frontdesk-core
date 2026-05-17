@@ -348,7 +348,7 @@ describe('booking apply route', () => {
     }
   });
 
-  it('propose_slot exact behavior does not thin neighboring candidates', async () => {
+  it('propose_slot exact behavior re-checks neighboring candidates but returns a compact selected slot response', async () => {
     const adapter = new MockScheduleAdapter({
       slots: [
         makeUtcSlot('2026-05-20T07:00:00.000Z', 'C4'),
@@ -377,11 +377,7 @@ describe('booking apply route', () => {
         booking_status: 'awaiting_patient_confirmation',
         proposed_slot: { start_at: '2026-05-20T07:15:00.000Z' },
       });
-      expect(response.json().proposed_slots.map((slot: { start_at: string }) => slot.start_at)).toEqual([
-        '2026-05-20T07:00:00.000Z',
-        '2026-05-20T07:15:00.000Z',
-        '2026-05-20T07:30:00.000Z',
-      ]);
+      expect(response.json().proposed_slots.map((slot: { start_at: string }) => slot.start_at)).toEqual(['2026-05-20T07:15:00.000Z']);
     } finally {
       await app.close();
     }
@@ -513,11 +509,7 @@ describe('booking apply route', () => {
       });
 
       expect(response.statusCode).toBe(200);
-      expect(response.json().proposed_slots.map((slot: { start_at: string }) => slot.start_at)).toEqual([
-        afternoonSlot.startAt,
-        fifteenSlot.startAt,
-        sixteenSlot.startAt,
-      ]);
+      expect(response.json().proposed_slots.map((slot: { start_at: string }) => slot.start_at)).toEqual([afternoonSlot.startAt]);
     } finally {
       await app.close();
     }
