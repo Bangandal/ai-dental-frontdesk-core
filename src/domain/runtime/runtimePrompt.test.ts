@@ -52,4 +52,14 @@ describe('buildRuntimePrompt', () => {
     expect(prompt.system_prompt).toContain('nearest only when the patient explicitly asks');
     expect(prompt.system_prompt).toContain('“когда есть свободно?”, “какие есть варианты?”, and “когда можно записаться?”');
   });
+
+  it('guides exact booking phrases to extract service_interest', () => {
+    const prompt = buildRuntimePrompt(basePromptInput);
+
+    expect(prompt.system_prompt).toContain('Extract appointment nouns and service phrases into slot_updates.service_interest');
+    expect(prompt.system_prompt).toContain('Хочу записаться на консультацию стоматолога 23.05 на 08:00');
+    expect(prompt.system_prompt).toContain('service_interest “консультация стоматолога”');
+    expect(prompt.system_prompt).toContain('“На чистку завтра утром” -> service_interest “чистка”');
+  });
+
 });

@@ -10,6 +10,7 @@ export const runtimeMetaSchema = z.object({
   first_name: z.string().nullable().optional(),
   last_name: z.string().nullable().optional(),
   language_code: z.string().nullable().optional(),
+  trace_id: z.string().optional(),
 });
 
 export const runtimeTurnInputSchema = z.object({

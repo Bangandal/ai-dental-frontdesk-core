@@ -274,7 +274,7 @@ export class RuntimeTurnService {
   ) {}
 
   async handleTurn(input: RuntimeTurnInput): Promise<RuntimeTurnResult> {
-    const traceId = randomUUID();
+    const traceId = readTraceId(input.meta?.trace_id) ?? randomUUID();
     const turnStartedAt = this.clock();
     const sourceMessageId = stringifyOptional(input.meta?.message_id);
     const sourceUpdateId = stringifyOptional(input.meta?.update_id);
@@ -309,6 +309,22 @@ export class RuntimeTurnService {
       payload: input,
       traceId,
     });
+
+    if (inboundEvent.isDuplicate === true) {
+      return {
+        trace_id: traceId,
+        reply_text: '',
+        clinic_id: clinic.id,
+        contact_id: contact.id,
+        case_id: null,
+        booking_result: null,
+        side_effects: [],
+        debug: {
+          inbound_event_id: inboundEvent.id,
+          duplicate: true,
+        },
+      };
+    }
 
     const userMessage = await this.repository.saveInboundUserMessage({
       clinicId: clinic.id,
@@ -1754,6 +1770,16 @@ export class PgRuntimeTurnRepository implements RuntimeTurnRepository {
 
     return result.rows[0] === undefined ? null : mapConvoStateRow(result.rows[0]);
   }
+}
+
+function readTraceId(value: unknown): string | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const trimmed = value.trim();
+
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(trimmed) ? trimmed : null;
 }
 
 function buildInboundDedupeKey(

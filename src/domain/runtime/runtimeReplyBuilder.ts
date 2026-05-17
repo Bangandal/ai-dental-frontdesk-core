@@ -19,7 +19,7 @@ export function buildReplyFromBookingResult(bookingResult: BookingApplyResponse,
 
   if (bookingResult.booking_status === 'awaiting_patient_confirmation') {
     return {
-      reply_text: `Є вільний час ${bookingResult.proposed_slot.label}. Підтверджуємо?`,
+      reply_text: buildAwaitingConfirmationReply(bookingResult.proposed_slot.label, language),
       reply_source: 'booking_result',
     };
   }
@@ -33,7 +33,7 @@ export function buildReplyFromBookingResult(bookingResult: BookingApplyResponse,
 
   if (bookingResult.booking_status === 'booked_pending_admin_confirmation') {
     return {
-      reply_text: `Запит на запис ${bookingResult.appointment.label} зафіксовано. Адміністратор перевірить і підтвердить запис.`,
+      reply_text: buildBookedPendingAdminConfirmationReply(bookingResult.appointment.label, language),
       reply_source: 'booking_result',
     };
   }
@@ -48,7 +48,7 @@ export function buildReplyFromBookingResult(bookingResult: BookingApplyResponse,
   if (bookingResult.booking_status === 'not_implemented') {
     if (bookingResult.booking_action === 'cancel_hold') {
       return {
-        reply_text: 'Добре, цей час не використовуємо. Підкажіть, будь ласка, інший зручний день або час.',
+        reply_text: buildCancelHoldNotImplementedReply(language),
         reply_source: 'booking_result',
       };
     }
@@ -63,6 +63,39 @@ export function buildReplyFromBookingResult(bookingResult: BookingApplyResponse,
     reply_text: RUNTIME_AI_SAFE_FALLBACK_REPLY,
     reply_source: 'safe_fallback',
   };
+}
+
+function buildAwaitingConfirmationReply(slotLabel: string, language: RuntimeReplyLanguage): string {
+  const templates = {
+    ru: `Есть свободное время ${slotLabel}. Подтверждаем?`,
+    uk: `Є вільний час ${slotLabel}. Підтверджуємо?`,
+    cs: `Je volný čas ${slotLabel}. Potvrdíme?`,
+    en: `There is an available time ${slotLabel}. Shall we confirm?`,
+  };
+
+  return templates[language];
+}
+
+function buildBookedPendingAdminConfirmationReply(slotLabel: string, language: RuntimeReplyLanguage): string {
+  const templates = {
+    ru: `Запрос на запись ${slotLabel} зафиксирован. Администратор проверит и подтвердит запись.`,
+    uk: `Запит на запис ${slotLabel} зафіксовано. Адміністратор перевірить і підтвердить запис.`,
+    cs: `Žádost o objednání ${slotLabel} je zaznamenána. Administrátor ji zkontroluje a potvrdí.`,
+    en: `The appointment request for ${slotLabel} has been recorded. An administrator will check and confirm it.`,
+  };
+
+  return templates[language];
+}
+
+function buildCancelHoldNotImplementedReply(language: RuntimeReplyLanguage): string {
+  const templates = {
+    ru: 'Хорошо, это время не используем. Подскажите, пожалуйста, другой удобный день или время.',
+    uk: 'Добре, цей час не використовуємо. Підкажіть, будь ласка, інший зручний день або час.',
+    cs: 'Dobře, tento čas nepoužijeme. Napište prosím jiný vhodný den nebo čas.',
+    en: 'Okay, we will not use this time. Please send another convenient day or time.',
+  };
+
+  return templates[language];
 }
 
 function buildSlotOptionsReply(slots: Array<{ label: string; start_at: string; provider_metadata?: Record<string, unknown> }>, language: RuntimeReplyLanguage): string {
