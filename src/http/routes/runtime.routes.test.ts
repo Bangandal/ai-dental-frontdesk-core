@@ -172,6 +172,83 @@ describe('runtime routes', () => {
     }
   });
 
+  it('returns a compact duplicate response without AI, booking, outbound message, or side effects', async () => {
+    const repository = new FakeRuntimeTurnRepository({ cases: [makeCase()] });
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'availability_request',
+      requested_action: 'check_availability',
+      availability_query: availabilityQuery({ search_type: 'specific_date', date_iso: '2026-05-20', flexibility: 'specific' }),
+      slot_updates: { service_interest: 'консультация' },
+      booking: { preferred_date_iso: '2026-05-20', time_of_day: 'any' },
+    }));
+    const bookingApplyService = new FakeBookingApplyService(awaitingSlotChoiceResponse());
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, {
+      runtimeTurnService: new RuntimeTurnService(repository, aiClient, bookingApplyService),
+    });
+
+    try {
+      const firstResponse = await app.inject({ method: 'POST', url: '/runtime/turn', payload: validPayload });
+      const firstBody = firstResponse.json();
+
+      expect(firstResponse.statusCode).toBe(200);
+      expect(firstBody.debug.duplicate).toBe(false);
+      expect(firstBody.reply_text).toContain('Есть несколько вариантов:');
+      expect(aiClient.calls).toHaveLength(1);
+      expect(bookingApplyService.calls).toHaveLength(1);
+      expect(repository.calls.outboundMessage).toBeDefined();
+
+      repository.operationOrder.length = 0;
+      delete repository.calls.outboundMessage;
+      const secondResponse = await app.inject({ method: 'POST', url: '/runtime/turn', payload: validPayload });
+      const secondBody = secondResponse.json();
+
+      expect(secondResponse.statusCode).toBe(200);
+      expect(secondBody).toMatchObject({
+        reply_text: '',
+        clinic_id: '11111111-1111-1111-1111-111111111111',
+        contact_id: '22222222-2222-2222-2222-222222222222',
+        case_id: null,
+        booking_result: null,
+        side_effects: [],
+        debug: { duplicate: true },
+      });
+      expect(aiClient.calls).toHaveLength(1);
+      expect(bookingApplyService.calls).toHaveLength(1);
+      expect(repository.calls.outboundMessage).toBeUndefined();
+      expect(repository.operationOrder).toEqual([]);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('preserves inbound trace_id for duplicate compact responses when provided', async () => {
+    const repository = new FakeRuntimeTurnRepository();
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({ reply_draft: 'Первый ответ.' }));
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, { runtimeTurnService: new RuntimeTurnService(repository, aiClient) });
+    const payload = {
+      ...validPayload,
+      meta: { ...validPayload.meta, trace_id: '99999999-9999-4999-9999-999999999999' },
+    };
+
+    try {
+      await app.inject({ method: 'POST', url: '/runtime/turn', payload });
+      const response = await app.inject({ method: 'POST', url: '/runtime/turn', payload });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        trace_id: '99999999-9999-4999-9999-999999999999',
+        reply_text: '',
+        side_effects: [],
+        debug: { duplicate: true },
+      });
+      expect(aiClient.calls).toHaveLength(1);
+    } finally {
+      await app.close();
+    }
+  });
+
   it('returns safe fallback with ai_error when AI output is invalid and does not call booking', async () => {
     const repository = new FakeRuntimeTurnRepository();
     const aiClient = new FakeRuntimeAIClient({ reply_draft: 'missing required fields' });
@@ -550,7 +627,7 @@ describe('runtime routes', () => {
 
       expect(response.statusCode).toBe(200);
       expect(response.json()).toMatchObject({
-        reply_text: 'Є вільний час 18.05.2026, 09:00. Підтверджуємо?',
+        reply_text: 'Есть свободное время 18.05.2026, 09:00. Подтверждаем?',
         booking_result: { booking_status: 'awaiting_patient_confirmation' },
         debug: { reply_source: 'booking_result' },
       });
@@ -633,7 +710,7 @@ describe('runtime routes', () => {
 
       expect(response.statusCode).toBe(200);
       expect(response.json()).toMatchObject({
-        reply_text: 'Є вільний час 18.05.2026, 09:00. Підтверджуємо?',
+        reply_text: 'Есть свободное время 18.05.2026, 09:00. Подтверждаем?',
         side_effects: [],
         debug: {
           reply_source: 'booking_result',
@@ -642,7 +719,7 @@ describe('runtime routes', () => {
       });
       expect(repository.calls.outboundMessage).toMatchObject({
         caseId: '55555555-5555-5555-5555-555555555555',
-        text: 'Є вільний час 18.05.2026, 09:00. Підтверджуємо?',
+        text: 'Есть свободное время 18.05.2026, 09:00. Подтверждаем?',
         meta: {
           source: 'runtime_turn',
           reply_source: 'booking_result',
@@ -811,7 +888,7 @@ describe('runtime routes', () => {
         channel: 'telegram',
       });
       expect(response.json()).toMatchObject({
-        reply_text: 'Є вільний час 18.05.2026, 09:00. Підтверджуємо?',
+        reply_text: 'Есть свободное время 18.05.2026, 09:00. Подтверждаем?',
         booking_result: { booking_status: 'awaiting_patient_confirmation' },
         side_effects: [],
         debug: {
@@ -872,7 +949,7 @@ describe('runtime routes', () => {
         timeOfDay: 'any',
       });
       expect(response.json()).toMatchObject({
-        reply_text: 'Є вільний час 12.05.2026, 09:00. Підтверджуємо?',
+        reply_text: 'Есть свободное время 12.05.2026, 09:00. Подтверждаем?',
         booking_result: { booking_status: 'awaiting_patient_confirmation' },
         debug: {
           ai_output_raw: {
@@ -1102,7 +1179,7 @@ describe('runtime routes', () => {
 
       expect(response.statusCode).toBe(200);
       expect(response.json()).toMatchObject({
-        reply_text: 'Є вільний час 18.05.2026, 09:00. Підтверджуємо?',
+        reply_text: 'Есть свободное время 18.05.2026, 09:00. Подтверждаем?',
         booking_result: { booking_status: 'awaiting_patient_confirmation' },
         side_effects: [],
         debug: {
@@ -1492,7 +1569,7 @@ describe('runtime routes', () => {
           date_normalization: { source: 'none' },
         },
       });
-      expect(response.json().reply_text).toContain('Адміністратор перевірить');
+      expect(response.json().reply_text).toContain('Администратор проверит');
       expect(response.json().side_effects).toEqual([]);
       expect(repository.mutationCalls).toEqual([]);
     } finally {
@@ -1531,7 +1608,7 @@ describe('runtime routes', () => {
         side_effects: [],
         debug: { reply_source: 'booking_result' },
       });
-      expect(response.json().reply_text).toContain('цей час не використовуємо');
+      expect(response.json().reply_text).toContain('это время не используем');
       expect(response.json().reply_text).not.toContain('отмен');
     } finally {
       await app.close();
@@ -2696,7 +2773,7 @@ describe('runtime routes', () => {
 
       expect(response.statusCode).toBe(200);
       expect(response.json()).toMatchObject({
-        reply_text: 'Запит на запис 18.05.2026, 09:00 зафіксовано. Адміністратор перевірить і підтвердить запис.',
+        reply_text: 'Запрос на запись 18.05.2026, 09:00 зафиксирован. Администратор проверит и подтвердит запись.',
         side_effects: [],
         debug: { admin_notification_error: { code: 'admin_notification_persistence_failed' } },
       });
@@ -2812,6 +2889,46 @@ describe('runtime routes', () => {
         ]),
       });
       expect(bookingApplyService.calls[0]).toMatchObject({ bookingAction: 'propose_options', metadata: { proposal_strategy: 'spread' } });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('exact slot AI output with service_interest calls propose_slot booking', async () => {
+    const repository = new FakeRuntimeTurnRepository();
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'availability_request',
+      requested_action: 'propose_slot',
+      availability_query: availabilityQuery({
+        search_type: 'exact_slot',
+        date_iso: '2026-05-23',
+        exact_time: '08:00',
+        flexibility: 'specific',
+      }),
+      slot_updates: { service_interest: 'консультация стоматолога' },
+      booking: { preferred_date_iso: '2026-05-23', time_of_day: 'morning' },
+    }));
+    const bookingApplyService = new FakeBookingApplyService(awaitingConfirmationResponse());
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, { runtimeTurnService: new RuntimeTurnService(repository, aiClient, bookingApplyService) });
+
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/runtime/turn',
+        payload: { ...validPayload, text: 'Хочу записаться на консультацию стоматолога 23.05 на 08:00' },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(bookingApplyService.calls).toHaveLength(1);
+      expect(bookingApplyService.calls[0]).toMatchObject({
+        bookingAction: 'propose_slot',
+        serviceInterest: 'консультация стоматолога',
+        preferredDateIso: '2026-05-23',
+        exactTime: '08:00',
+        metadata: { policy_action: 'propose_slot' },
+      });
+      expect(response.json().booking_result).toMatchObject({ booking_status: 'awaiting_patient_confirmation' });
     } finally {
       await app.close();
     }
@@ -3018,6 +3135,74 @@ describe('runtime routes', () => {
     }
   });
 
+  it('builds Russian awaiting_patient_confirmation booking replies for ru', async () => {
+    const repository = new FakeRuntimeTurnRepository({ cases: [makeCase()] });
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'availability_request',
+      requested_action: 'propose_slot',
+      availability_query: availabilityQuery({ search_type: 'exact_slot', date_iso: '2026-05-18', exact_time: '09:00', flexibility: 'specific' }),
+      slot_updates: { service_interest: 'консультация' },
+      booking: { preferred_date_iso: '2026-05-18', time_of_day: 'morning' },
+    }));
+    const bookingApplyService = new FakeBookingApplyService(awaitingConfirmationResponse());
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, { runtimeTurnService: new RuntimeTurnService(repository, aiClient, bookingApplyService) });
+
+    try {
+      const response = await app.inject({ method: 'POST', url: '/runtime/turn', payload: { ...validPayload, meta: { ...validPayload.meta, language_code: 'ru' } } });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json().reply_text).toBe('Есть свободное время 18.05.2026, 09:00. Подтверждаем?');
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('builds Ukrainian awaiting_patient_confirmation booking replies for uk', async () => {
+    const repository = new FakeRuntimeTurnRepository({ cases: [makeCase()] });
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'availability_request',
+      requested_action: 'propose_slot',
+      availability_query: availabilityQuery({ search_type: 'exact_slot', date_iso: '2026-05-18', exact_time: '09:00', flexibility: 'specific' }),
+      slot_updates: { service_interest: 'консультація' },
+      booking: { preferred_date_iso: '2026-05-18', time_of_day: 'morning' },
+    }));
+    const bookingApplyService = new FakeBookingApplyService(awaitingConfirmationResponse());
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, { runtimeTurnService: new RuntimeTurnService(repository, aiClient, bookingApplyService) });
+
+    try {
+      const response = await app.inject({ method: 'POST', url: '/runtime/turn', payload: { ...validPayload, meta: { ...validPayload.meta, language_code: 'uk' } } });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json().reply_text).toBe('Є вільний час 18.05.2026, 09:00. Підтверджуємо?');
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('builds Russian booked_pending_admin_confirmation booking replies for ru', async () => {
+    const activeHold = makeAppointment({ dedupeKey: 'hold-key-1' });
+    const repository = new FakeRuntimeTurnRepository({ activeHold, latestAppointment: activeHold });
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'patient_confirmation',
+      requested_action: 'confirm_slot',
+      booking: { preferred_date_iso: null, preferred_weekday: null, time_of_day: null, patient_confirmed_proposed_slot: true, patient_rejected_proposed_slot: false, selected_hold_id: 'hold-key-1' },
+    }));
+    const bookingApplyService = new FakeBookingApplyService(confirmedResponse());
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, { runtimeTurnService: new RuntimeTurnService(repository, aiClient, bookingApplyService) });
+
+    try {
+      const response = await app.inject({ method: 'POST', url: '/runtime/turn', payload: { ...validPayload, meta: { ...validPayload.meta, language_code: 'ru' } } });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json().reply_text).toBe('Запрос на запись 18.05.2026, 09:00 зафиксирован. Администратор проверит и подтвердит запись.');
+    } finally {
+      await app.close();
+    }
+  });
+
   it('builds Ukrainian localized option replies for awaiting_slot_choice', async () => {
     const repository = new FakeRuntimeTurnRepository({ cases: [makeCase()] });
     const aiClient = new FakeRuntimeAIClient(validAIOutput({
@@ -3110,12 +3295,16 @@ class FakeRuntimeTurnRepository implements RuntimeTurnRepository {
     };
   }
 
+  private readonly inboundDedupeKeys = new Set<string>();
+
   async registerInboundEvent(input: RegisterInboundEventInput) {
     this.calls.inboundEvent = input;
+    const isDuplicate = this.inboundDedupeKeys.has(input.dedupeKey);
+    this.inboundDedupeKeys.add(input.dedupeKey);
 
     return {
       id: '33333333-3333-3333-3333-333333333333',
-      isDuplicate: false,
+      isDuplicate,
     };
   }
 
