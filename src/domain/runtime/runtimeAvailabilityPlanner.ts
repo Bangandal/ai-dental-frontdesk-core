@@ -4,7 +4,7 @@ import type { RuntimeBookingContext, RuntimeCaseContext, RuntimeClinicRecord } f
 import { resolveRuntimeReplyLanguage } from './runtimeReplyLanguage.js';
 import { runtimeReplyTemplate } from './runtimeReplyTemplates.js';
 
-export type RuntimeAvailabilityBookingAction = 'propose_slot' | 'confirm_slot' | 'cancel_hold';
+export type RuntimeAvailabilityBookingAction = 'propose_options' | 'propose_slot' | 'confirm_slot' | 'cancel_hold';
 
 export interface RuntimeAvailabilityPlannerInput {
   ai_output: RuntimeAIOutput;
@@ -123,12 +123,12 @@ export function planRuntimeAvailability(input: RuntimeAvailabilityPlannerInput):
 
   return {
     should_call_booking: true,
-    booking_action: 'propose_slot',
+    booking_action: 'propose_options',
     booking_request: {
       clinicId: input.clinic.id,
       contactId: input.contact_id,
       caseId: input.case_context.current_case_id,
-      bookingAction: 'propose_slot',
+      bookingAction: 'propose_options',
       serviceInterest,
       preferredDateIso,
       preferredWeekday: effectiveQuery.weekday,
@@ -355,7 +355,7 @@ function buildPlannerMetadata(
 ): Record<string, unknown> {
   return {
     source: 'runtime_availability_planner',
-    policy_action: 'propose_slot',
+    policy_action: 'propose_options',
     clinic_timezone: input.clinic.timezone,
     current_time_iso: input.current_time_iso ?? null,
     current_clinic_date_iso: input.current_clinic_date_iso,

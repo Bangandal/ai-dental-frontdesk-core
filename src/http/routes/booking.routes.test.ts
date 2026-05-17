@@ -147,6 +147,99 @@ describe('booking apply route', () => {
 
 
 
+  it('propose_options returns up to 3 options without creating holds or notifying admin', async () => {
+    const repository = new InMemoryAppointmentRepository();
+    const adapter = new MockScheduleAdapter({ slots: [tenSlot, elevenSlot, afternoonSlot, fifteenSlot] });
+    const app = await buildTestApp(repository, adapter);
+
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/booking/apply',
+        payload: {
+          ...basePayload,
+          bookingAction: 'propose_options',
+          timeOfDay: 'any',
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        booking_action: 'propose_options',
+        booking_status: 'awaiting_slot_choice',
+        proposed_slot: null,
+        should_notify_admin: false,
+        reason: 'slot_options_available',
+      });
+      expect(response.json().proposed_slots.map((slot: { option_id: string }) => slot.option_id)).toEqual(['1', '2', '3']);
+      expect(repository.appointments).toHaveLength(0);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('selected available slot re-checks availability and creates a hold for exact selected slot only', async () => {
+    const repository = new InMemoryAppointmentRepository();
+    const adapter = new MockScheduleAdapter({ slots: [morningSlot, afternoonSlot] });
+    const app = await buildTestApp(repository, adapter);
+
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/booking/apply',
+        payload: {
+          ...basePayload,
+          bookingAction: 'propose_slot',
+          timeOfDay: 'any',
+          selectedSlotStartAt: afternoonSlot.startAt,
+          selectedSlotEndAt: afternoonSlot.endAt,
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        booking_status: 'awaiting_patient_confirmation',
+        proposed_slot: { start_at: afternoonSlot.startAt },
+      });
+      expect(repository.appointments).toHaveLength(1);
+      expect(repository.appointments[0]?.startAt).toBe(afternoonSlot.startAt);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('selected unavailable slot returns stale_slot_unavailable and does not silently choose another slot', async () => {
+    const repository = new InMemoryAppointmentRepository();
+    const adapter = new MockScheduleAdapter({ slots: [morningSlot] });
+    const app = await buildTestApp(repository, adapter);
+
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/booking/apply',
+        payload: {
+          ...basePayload,
+          bookingAction: 'propose_slot',
+          timeOfDay: 'any',
+          selectedSlotStartAt: afternoonSlot.startAt,
+          selectedSlotEndAt: afternoonSlot.endAt,
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        booking_status: 'no_slots',
+        proposed_slot: null,
+        proposed_slots: [],
+        reason: 'stale_slot_unavailable',
+      });
+      expect(repository.appointments).toHaveLength(0);
+    } finally {
+      await app.close();
+    }
+  });
+
+
   it('enforces before time window and does not propose 10:00 or 11:00', async () => {
     const repository = new InMemoryAppointmentRepository();
     const adapter = new MockScheduleAdapter({ slots: [elevenSlot, tenSlot, morningSlot] });

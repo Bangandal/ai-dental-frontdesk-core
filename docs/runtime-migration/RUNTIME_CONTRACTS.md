@@ -42,8 +42,8 @@
     "preferred_time": null,
     "preferred_contact": null
   },
-  "requested_action": "continue|ask_slot|answer_faq|handoff|complete_intake|clarify|greeting|stop|check_availability|propose_slot|await_confirmation|confirm_slot|reject_slot|create_appointment",
-  "conversation_intent": "greeting|faq|booking|availability_request|patient_confirmation|slot_rejected|objection|urgent|correction|off_topic|post_handoff_ack|follow_up|multi_patient_request|reschedule|cancel_appointment|unknown",
+  "requested_action": "continue|ask_slot|answer_faq|handoff|complete_intake|clarify|greeting|stop|check_availability|propose_slot|select_slot|await_confirmation|confirm_slot|reject_slot|create_appointment",
+  "conversation_intent": "greeting|faq|booking|availability_request|slot_selection|patient_confirmation|slot_rejected|objection|urgent|correction|off_topic|post_handoff_ack|follow_up|multi_patient_request|reschedule|cancel_appointment|unknown",
   "availability_query": {
     "search_type": "nearest_available|specific_date|weekday|relative_day|exact_slot|time_constraint|unknown",
     "date_iso": null,
@@ -56,6 +56,12 @@
     },
     "exact_time": "HH:mm|null",
     "flexibility": "specific|flexible|nearest|unknown"
+  },
+  "slot_selection": {
+    "selected_option_id": null,
+    "selected_start_at": null,
+    "selected_time": null,
+    "selection_confidence": "high|medium|low|unknown"
   },
   "booking": {
     "preferred_date_iso": null,
@@ -78,7 +84,7 @@
   "clinicId": "uuid",
   "contactId": "uuid",
   "caseId": "uuid|null",
-  "bookingAction": "propose_slot|confirm_slot|cancel_hold",
+  "bookingAction": "propose_options|propose_slot|confirm_slot|cancel_hold",
   "serviceInterest": "консультация",
   "preferredDateIso": "2026-05-16",
   "preferredWeekday": null,
@@ -89,6 +95,9 @@
   },
   "exactTime": "HH:mm|null",
   "activeHoldId": null,
+  "selectedSlotStartAt": "ISO datetime|null",
+  "selectedSlotEndAt": "ISO datetime|null",
+  "selectedSlotProviderMetadata": {},
   "patientName": "Patient",
   "channel": "telegram",
   "traceId": "uuid",
@@ -134,3 +143,33 @@ Expected RPC result shape:
 ```
 
 Runtime maps `hits[*].similarity` to snippet `score`, reads `source_type` from `metadata.source_type` when present, and treats KB as found only when `count > 0` and at least one snippet is mapped.
+
+
+## Multi-slot proposal memory
+
+Runtime stores the latest offered options in `core.convo_state.state_json.runtime` (backend-owned state; AI must not write it directly):
+
+```json
+{
+  "runtime": {
+    "last_proposed_slots": [
+      {
+        "option_id": "1",
+        "start_at": "2026-05-20T08:00:00.000Z",
+        "end_at": "2026-05-20T08:30:00.000Z",
+        "label": "20.05.2026, 10:00",
+        "service_interest": "консультация",
+        "preferred_date_iso": "2026-05-20",
+        "time_of_day": "any",
+        "exact_time": null,
+        "provider_metadata": {}
+      }
+    ],
+    "last_proposed_slots_trace_id": "uuid",
+    "last_proposed_slots_created_at": "2026-05-17T10:00:00.000Z",
+    "awaiting_slot_choice": true
+  }
+}
+```
+
+`bookingAction = propose_options` checks real availability and returns up to 3 `proposed_slots` with `booking_status = awaiting_slot_choice`. It does not create holds, write external calendar records, or notify admin. After the patient chooses one option, AI fills typed `slot_selection`; backend resolves it against this stored memory, re-checks the exact selected slot, and only then calls `propose_slot` to create the single hold with `booking_status = awaiting_patient_confirmation`.

@@ -151,6 +151,12 @@ function validAIOutput(overrides: Partial<RuntimeAIOutput> = {}): RuntimeAIOutpu
       preferred_time: null,
       preferred_contact: null,
     },
+    slot_selection: {
+      selected_option_id: null,
+      selected_start_at: null,
+      selected_time: null,
+      selection_confidence: 'unknown',
+    },
     booking: {
       preferred_date_iso: null,
       preferred_weekday: null,
@@ -172,6 +178,10 @@ function validAIOutput(overrides: Partial<RuntimeAIOutput> = {}): RuntimeAIOutpu
     slot_updates: {
       ...base.slot_updates,
       ...overrides.slot_updates,
+    },
+    slot_selection: {
+      ...base.slot_selection,
+      ...overrides.slot_selection,
     },
     booking: {
       ...base.booking,

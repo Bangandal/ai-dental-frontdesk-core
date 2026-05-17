@@ -37,7 +37,7 @@ const bookingContext: RuntimeBookingContext = {
 };
 
 describe('RuntimeAvailabilityPlanner', () => {
-  it('plans nearest_available with service as propose_slot', () => {
+  it('plans nearest_available with service as propose_options', () => {
     const result = planRuntimeAvailability({
       ...basePlannerInput(),
       ai_output: validAIOutput({ availability_query: availabilityQuery({ search_type: 'nearest_available', flexibility: 'nearest' }) }),
@@ -45,10 +45,10 @@ describe('RuntimeAvailabilityPlanner', () => {
 
     expect(result).toMatchObject({
       should_call_booking: true,
-      booking_action: 'propose_slot',
+      booking_action: 'propose_options',
       reason: 'availability_nearest_available',
       booking_request: {
-        bookingAction: 'propose_slot',
+        bookingAction: 'propose_options',
         serviceInterest: 'консультация',
         preferredDateIso: null,
         timeOfDay: 'any',
@@ -334,6 +334,12 @@ function validAIOutput(overrides: Partial<RuntimeAIOutput> = {}): RuntimeAIOutpu
       preferred_contact: null,
     },
     availability_query: availabilityQuery(),
+    slot_selection: {
+      selected_option_id: null,
+      selected_start_at: null,
+      selected_time: null,
+      selection_confidence: 'unknown',
+    },
     booking: {
       preferred_date_iso: null,
       preferred_weekday: null,
@@ -355,6 +361,10 @@ function validAIOutput(overrides: Partial<RuntimeAIOutput> = {}): RuntimeAIOutpu
     slot_updates: {
       ...base.slot_updates,
       ...overrides.slot_updates,
+    },
+    slot_selection: {
+      ...base.slot_selection,
+      ...overrides.slot_selection,
     },
     booking: {
       ...base.booking,

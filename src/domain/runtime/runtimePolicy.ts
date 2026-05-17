@@ -120,7 +120,7 @@ export function decideRuntimeAction(input: RuntimePolicyInput): RuntimePolicyDec
       current_clinic_date_iso: input.current_clinic_date_iso ?? readDatePart(input.current_time_iso) ?? new Date().toISOString().slice(0, 10),
     });
     return {
-      next_action: availabilityDecision.booking_action ?? (availabilityDecision.should_call_booking ? 'propose_slot' : 'ask_preferred_datetime'),
+      next_action: availabilityDecision.booking_action ?? (availabilityDecision.should_call_booking ? 'propose_options' : 'ask_preferred_datetime'),
       should_call_booking: availabilityDecision.should_call_booking,
       booking_request: availabilityDecision.booking_request,
       reason: availabilityDecision.reason,

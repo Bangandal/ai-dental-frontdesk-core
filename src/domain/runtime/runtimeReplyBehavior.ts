@@ -29,7 +29,7 @@ export interface RuntimeReplyBehaviorResult extends RuntimeReplyDecision {
 export function buildRuntimeReplyBehavior(input: RuntimeReplyBehaviorInput): RuntimeReplyBehaviorResult {
   if (input.booking_result !== null && input.booking_result.booking_status !== 'none') {
     return {
-      ...buildReplyFromBookingResult(input.booking_result),
+      ...buildReplyFromBookingResult(input.booking_result, input.response_language),
       side_effects: [],
     };
   }
