@@ -25,6 +25,15 @@ import {
 import type { RuntimeReplySource } from './runtimeReplyBuilder.js';
 import type { RuntimeEmbeddingClient } from './runtimeEmbeddingClient.js';
 import { NoopRuntimeKnowledgeRepository, type RuntimeKnowledgeRepository, type RuntimeKnowledgeResult } from './runtimeKnowledgeRepository.js';
+import {
+  buildRuntimeStateUpdate,
+  mirrorPendingQuestion,
+  mirrorProposedSlots,
+  proposedSlotsFromBookingResult,
+  readRuntimeCaseMemory,
+  resolveRuntimeTurnContext,
+  writeRuntimeCaseMemory,
+} from './runtimeContextResolver.js';
 
 export interface RuntimeClinicRecord {
   id: string;
@@ -363,6 +372,7 @@ export class RuntimeTurnService {
       bookingContext,
       now: turnStartedAt,
     });
+    const caseMemoryBefore = readRuntimeCaseMemory(convoState.state);
     const debug: Record<string, unknown> = {
       inbound_event_id: inboundEvent.id,
       user_message_id: userMessage.id,
@@ -370,6 +380,9 @@ export class RuntimeTurnService {
       duplicate: inboundEvent.isDuplicate,
       case_context: caseContext,
       booking_context: bookingContext,
+      case_memory_before: caseMemoryBefore,
+      case_memory_after: caseMemoryBefore,
+      runtime_state_update: buildRuntimeStateUpdate(readRecord(convoState.state.runtime)),
       prompt_version: prompt.prompt_version,
     };
 
@@ -409,19 +422,42 @@ export class RuntimeTurnService {
       });
       let aiOutput = normalizationResult.ai_output;
       const pendingClarification = readPendingPriceFaqClarification(convoState.state);
-      const serviceInterest = readString(aiOutput.slot_updates.service_interest);
+      const initialServiceInterest = readString(aiOutput.slot_updates.service_interest);
 
-      if (pendingClarification !== null && serviceInterest !== null) {
+      if (pendingClarification !== null && initialServiceInterest !== null) {
         aiOutput = forcePriceFaqCompletion(aiOutput);
         debug.pending_clarification = { ...pendingClarification, status: 'completed' };
       }
 
+      const contextResolution = resolveRuntimeTurnContext({
+        aiOutput,
+        convoState,
+        bookingContext,
+        traceId,
+        nowIso: turnStartedAt.toISOString(),
+        pendingPriceFollowup: pendingClarification !== null && initialServiceInterest !== null,
+      });
+      aiOutput = contextResolution.ai_output;
+      debug.case_memory_before = contextResolution.case_memory_before;
+      debug.resolved_turn_context = contextResolution.resolved_turn_context;
+      debug.case_memory_after = contextResolution.case_memory_after;
+      if (contextResolution.changed) {
+        await this.persistCaseMemory({
+          convoState,
+          clinicId: clinic.id,
+          contactId: contact.id,
+          caseMemory: contextResolution.case_memory_after,
+          debug,
+        });
+      }
+
+      const serviceInterest = readString(aiOutput.slot_updates.service_interest);
       aiOutputForNotification = aiOutput;
       debug.ai_output_raw = parsedAIOutput;
       debug.ai_output = aiOutput;
       debug.date_normalization = normalizationResult.debug;
 
-      const pendingPriceNeedsService = pendingClarification !== null && serviceInterest === null;
+      const pendingPriceNeedsService = pendingClarification !== null && initialServiceInterest === null;
       const newPriceNeedsService = pendingClarification === null && isPriceFaqMissingService(aiOutput);
 
       if (pendingPriceNeedsService) {
@@ -482,6 +518,17 @@ export class RuntimeTurnService {
 
         policyDecisionForReply = policyDecision;
         debug.policy_decision = policyDecision;
+
+        if (policyDecision.reason === 'booking_interest_missing_datetime') {
+          await this.persistBookingDatetimeQuestion({
+            convoState,
+            clinicId: clinic.id,
+            contactId: contact.id,
+            traceId,
+            askedAt: turnStartedAt.toISOString(),
+            debug,
+          });
+        }
 
         if (policyDecision.should_call_booking && policyDecision.booking_request !== null && this.bookingApplyService !== undefined) {
           debug.booking_request = policyDecision.booking_request;
@@ -715,6 +762,35 @@ export class RuntimeTurnService {
   }
 
 
+  private async persistCaseMemory(input: {
+    convoState: RuntimeConvoStateRecord;
+    clinicId: string;
+    contactId: string;
+    caseMemory: ReturnType<typeof readRuntimeCaseMemory>;
+    debug: Record<string, unknown>;
+  }): Promise<void> {
+    const nextState = writeRuntimeCaseMemory(input.convoState.state, input.caseMemory);
+
+    try {
+      const saved = await this.repository.saveConvoState({
+        clinicId: input.clinicId,
+        contactId: input.contactId,
+        state: nextState,
+      });
+      input.convoState.state = saved.state;
+      input.convoState.stateVersion = saved.stateVersion;
+      input.debug.case_memory_after = input.caseMemory;
+      input.debug.runtime_state_update = buildRuntimeStateUpdate(readRecord(saved.state.runtime));
+      input.debug.runtime_state_saved = {
+        ...readRecord(input.debug.runtime_state_saved),
+        case_memory: true,
+      };
+    } catch (error) {
+      input.debug.runtime_state_save_error = formatOutboundPersistenceError(error);
+    }
+  }
+
+
   private async persistPendingPriceFaqClarification(input: {
     convoState: RuntimeConvoStateRecord;
     clinicId: string;
@@ -730,13 +806,21 @@ export class RuntimeTurnService {
       created_at: input.createdAt,
       trace_id: input.traceId,
     };
-    const nextState = {
+    const pendingState = {
       ...input.convoState.state,
       runtime: {
         ...readRecord(input.convoState.state.runtime),
         pending_clarification: pendingClarification,
       },
     };
+    const mirrored = mirrorPendingQuestion({
+      state: pendingState,
+      slot: 'service_interest',
+      topic: 'price',
+      askedAt: input.createdAt,
+      traceId: input.traceId,
+    });
+    const nextState = mirrored.state;
 
     try {
       const saved = await this.repository.saveConvoState({
@@ -746,9 +830,12 @@ export class RuntimeTurnService {
       });
       input.convoState.state = saved.state;
       input.convoState.stateVersion = saved.stateVersion;
+      input.debug.case_memory_after = mirrored.case_memory;
+      input.debug.runtime_state_update = buildRuntimeStateUpdate(readRecord(saved.state.runtime));
       input.debug.runtime_state_saved = {
         ...readRecord(input.debug.runtime_state_saved),
         pending_clarification: pendingClarification,
+        last_assistant_question: mirrored.case_memory.cases[0]?.last_assistant_question ?? null,
       };
     } catch (error) {
       input.debug.runtime_state_save_error = formatOutboundPersistenceError(error);
@@ -781,10 +868,48 @@ export class RuntimeTurnService {
       });
       input.convoState.state = saved.state;
       input.convoState.stateVersion = saved.stateVersion;
+      input.debug.case_memory_after = readRuntimeCaseMemory(saved.state);
+      input.debug.runtime_state_update = buildRuntimeStateUpdate(readRecord(saved.state.runtime));
       input.debug.runtime_state_saved = {
         ...readRecord(input.debug.runtime_state_saved),
         pending_clarification: null,
         pending_clarification_cleared: true,
+      };
+    } catch (error) {
+      input.debug.runtime_state_save_error = formatOutboundPersistenceError(error);
+    }
+  }
+
+
+  private async persistBookingDatetimeQuestion(input: {
+    convoState: RuntimeConvoStateRecord;
+    clinicId: string;
+    contactId: string;
+    traceId: string;
+    askedAt: string;
+    debug: Record<string, unknown>;
+  }): Promise<void> {
+    const mirrored = mirrorPendingQuestion({
+      state: input.convoState.state,
+      slot: 'preferred_datetime',
+      topic: 'booking',
+      askedAt: input.askedAt,
+      traceId: input.traceId,
+    });
+
+    try {
+      const saved = await this.repository.saveConvoState({
+        clinicId: input.clinicId,
+        contactId: input.contactId,
+        state: mirrored.state,
+      });
+      input.convoState.state = saved.state;
+      input.convoState.stateVersion = saved.stateVersion;
+      input.debug.case_memory_after = mirrored.case_memory;
+      input.debug.runtime_state_update = buildRuntimeStateUpdate(readRecord(saved.state.runtime));
+      input.debug.runtime_state_saved = {
+        ...readRecord(input.debug.runtime_state_saved),
+        last_assistant_question: mirrored.case_memory.cases[0]?.last_assistant_question ?? null,
       };
     } catch (error) {
       input.debug.runtime_state_save_error = formatOutboundPersistenceError(error);
@@ -809,21 +934,12 @@ export class RuntimeTurnService {
       return;
     }
 
-    const proposedSlots = input.bookingResult.proposed_slots.slice(0, 3).map((slot, index): RuntimeProposedSlotMemory => ({
-      option_id: slot.option_id ?? String(index + 1),
-      start_at: slot.start_at,
-      end_at: slot.end_at,
-      label: slot.label,
-      cell_range: slot.cell_range,
-      sheet_name: slot.sheet_name,
-      service_interest: slot.service_interest,
-      preferred_date_iso: input.bookingRequest.preferredDateIso ?? null,
-      time_of_day: input.bookingRequest.timeOfDay,
-      exact_time: input.bookingRequest.exactTime ?? null,
-      provider_metadata: slot.provider_metadata ?? {},
-    }));
+    const proposedSlots = proposedSlotsFromBookingResult({
+      bookingResult: input.bookingResult,
+      bookingRequest: input.bookingRequest,
+    });
 
-    const nextState = {
+    const slotState = {
       ...input.convoState.state,
       runtime: {
         ...readRecord(input.convoState.state.runtime),
@@ -833,6 +949,13 @@ export class RuntimeTurnService {
         awaiting_slot_choice: true,
       },
     };
+    const mirrored = mirrorProposedSlots({
+      state: slotState,
+      proposedSlots,
+      status: 'awaiting_slot_choice',
+      updatedAt: input.createdAt,
+    });
+    const nextState = mirrored.state;
 
     try {
       const saved = await this.repository.saveConvoState({
@@ -842,7 +965,13 @@ export class RuntimeTurnService {
       });
       input.convoState.state = saved.state;
       input.convoState.stateVersion = saved.stateVersion;
-      input.debug.runtime_state_saved = { awaiting_slot_choice: true, proposed_slots_count: proposedSlots.length };
+      input.debug.case_memory_after = mirrored.case_memory;
+      input.debug.runtime_state_update = buildRuntimeStateUpdate(readRecord(saved.state.runtime));
+      input.debug.runtime_state_saved = {
+        ...readRecord(input.debug.runtime_state_saved),
+        awaiting_slot_choice: true,
+        proposed_slots_count: proposedSlots.length,
+      };
     } catch (error) {
       input.debug.runtime_state_save_error = formatOutboundPersistenceError(error);
     }
@@ -859,7 +988,7 @@ export class RuntimeTurnService {
     createdAt: string;
     debug: Record<string, unknown>;
   }): Promise<void> {
-    const nextState = {
+    const consumedState = {
       ...input.convoState.state,
       runtime: {
         ...readRecord(input.convoState.state.runtime),
@@ -869,6 +998,13 @@ export class RuntimeTurnService {
         awaiting_slot_choice: false,
       },
     };
+    const mirrored = mirrorProposedSlots({
+      state: consumedState,
+      proposedSlots: [],
+      status: input.bookingResult.booking_status === 'awaiting_patient_confirmation' ? 'awaiting_confirmation' : 'collecting',
+      updatedAt: input.createdAt,
+    });
+    const nextState = mirrored.state;
 
     try {
       const saved = await this.repository.saveConvoState({
@@ -878,7 +1014,10 @@ export class RuntimeTurnService {
       });
       input.convoState.state = saved.state;
       input.convoState.stateVersion = saved.stateVersion;
+      input.debug.case_memory_after = mirrored.case_memory;
+      input.debug.runtime_state_update = buildRuntimeStateUpdate(readRecord(saved.state.runtime));
       input.debug.runtime_state_saved = {
+        ...readRecord(input.debug.runtime_state_saved),
         awaiting_slot_choice: false,
         proposed_slots_count: 0,
         consumed_booking_status: input.bookingResult.booking_status,

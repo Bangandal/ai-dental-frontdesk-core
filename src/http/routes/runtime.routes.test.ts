@@ -508,6 +508,234 @@ describe('runtime routes', () => {
     }
   });
 
+
+  it('persists service memory after pending price FAQ completion', async () => {
+    const repository = new FakeRuntimeTurnRepository({ state: pendingPriceFaqState() });
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'booking',
+      requested_action: 'ask_slot',
+      slot_updates: { service_interest: 'чистка зубов' },
+      reply_draft: 'Подскажите удобный день и время.',
+    }));
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, {
+      runtimeTurnService: new RuntimeTurnService(
+        repository,
+        aiClient,
+        new FakeBookingApplyService(awaitingConfirmationResponse()),
+        fixedClock,
+        new FakeRuntimeKnowledgeRepository({
+          found: true,
+          count: 1,
+          top_similarity: 0.9,
+          context_text: 'RU: Чистка зубов стоит от 1200 Kč.',
+          snippets: [{ title: 'Cleaning price', content: 'RU: Чистка зубов стоит от 1200 Kč.', metadata: { source_type: 'faq' }, score: 0.9, source_type: 'faq' }],
+        }),
+        new FakeRuntimeEmbeddingClient(makeEmbedding()),
+      ),
+    });
+
+    try {
+      const response = await app.inject({ method: 'POST', url: '/runtime/turn', payload: { ...validPayload, text: 'чистка зубов' } });
+      const body = response.json();
+
+      expect(response.statusCode).toBe(200);
+      expect(body.debug.case_memory_after.cases[0].collected.service_interest).toMatchObject({
+        value: 'чистка зубов',
+        source: 'faq_price_followup',
+        updated_at: '2026-05-17T12:00:00.000Z',
+        trace_id: expect.any(String),
+      });
+      expect(repository.calls.savedState?.state.runtime.case_memory.cases[0].collected.service_interest.value).toBe('чистка зубов');
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('uses remembered price FAQ service for a later availability question without asking service again', async () => {
+    const repository = new FakeRuntimeTurnRepository({ state: pendingPriceFaqState() });
+    const aiClient = new FakeRuntimeAIClient([
+      validAIOutput({
+        conversation_intent: 'booking',
+        requested_action: 'ask_slot',
+        slot_updates: { service_interest: 'чистка зубов' },
+        reply_draft: 'Подскажите удобный день и время.',
+      }),
+      validAIOutput({
+        conversation_intent: 'availability_request',
+        requested_action: 'check_availability',
+        availability_query: availabilityQuery({ search_type: 'specific_date', date_iso: '2026-05-18', flexibility: 'specific' }),
+        booking: { preferred_date_iso: '2026-05-18', time_of_day: 'any' },
+      }),
+    ]);
+    const bookingApplyService = new FakeBookingApplyService(awaitingConfirmationResponse());
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, {
+      runtimeTurnService: new RuntimeTurnService(
+        repository,
+        aiClient,
+        bookingApplyService,
+        fixedClock,
+        new FakeRuntimeKnowledgeRepository({
+          found: true,
+          count: 1,
+          top_similarity: 0.9,
+          context_text: 'RU: Чистка зубов стоит от 1200 Kč.',
+          snippets: [{ title: 'Cleaning price', content: 'RU: Чистка зубов стоит от 1200 Kč.', metadata: { source_type: 'faq' }, score: 0.9, source_type: 'faq' }],
+        }),
+        new FakeRuntimeEmbeddingClient(makeEmbedding()),
+      ),
+    });
+
+    try {
+      await app.inject({ method: 'POST', url: '/runtime/turn', payload: { ...validPayload, text: 'чистка зубов', meta: { ...validPayload.meta, message_id: '1271', update_id: 464427368 } } });
+      const response = await app.inject({ method: 'POST', url: '/runtime/turn', payload: { ...validPayload, text: 'на 18 число какие у вас слоты есть?', meta: { ...validPayload.meta, message_id: '1272', update_id: 464427369 } } });
+      const body = response.json();
+
+      expect(response.statusCode).toBe(200);
+      expect(bookingApplyService.calls[0]).toMatchObject({
+        serviceInterest: 'чистка зубов',
+        preferredDateIso: '2026-05-18',
+      });
+      expect(body.reply_text).not.toContain('какую услугу');
+      expect(body.debug.resolved_turn_context).toMatchObject({
+        ai_service_interest: null,
+        memory_service_interest: 'чистка зубов',
+        resolved_service_interest: 'чистка зубов',
+        service_interest_source: 'case_memory',
+      });
+      expect(body.debug.ai_output.slot_updates.service_interest).toBe('чистка зубов');
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('lets current explicit service override service memory', async () => {
+    const repository = new FakeRuntimeTurnRepository({ state: caseMemoryState('чистка зубов') });
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'availability_request',
+      requested_action: 'check_availability',
+      availability_query: availabilityQuery({ search_type: 'specific_date', date_iso: '2026-05-18', flexibility: 'specific' }),
+      slot_updates: { service_interest: 'имплантация' },
+      booking: { preferred_date_iso: '2026-05-18', time_of_day: 'any' },
+    }));
+    const bookingApplyService = new FakeBookingApplyService(awaitingConfirmationResponse());
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, { runtimeTurnService: new RuntimeTurnService(repository, aiClient, bookingApplyService, fixedClock) });
+
+    try {
+      const response = await app.inject({ method: 'POST', url: '/runtime/turn', payload: validPayload });
+      expect(response.statusCode).toBe(200);
+      expect(bookingApplyService.calls[0].serviceInterest).toBe('имплантация');
+      expect(response.json().debug.resolved_turn_context).toMatchObject({
+        memory_service_interest: 'чистка зубов',
+        resolved_service_interest: 'имплантация',
+        service_interest_source: 'ai',
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('does not use service memory for a pure FAQ turn', async () => {
+    const repository = new FakeRuntimeTurnRepository({ state: caseMemoryState('чистка зубов') });
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'faq',
+      requested_action: 'answer_faq',
+      faq_topic: 'address',
+      reply_draft: 'Мы находимся в центре.',
+    }));
+    const bookingApplyService = new FakeBookingApplyService(awaitingConfirmationResponse());
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, { runtimeTurnService: new RuntimeTurnService(repository, aiClient, bookingApplyService, fixedClock) });
+
+    try {
+      const response = await app.inject({ method: 'POST', url: '/runtime/turn', payload: { ...validPayload, text: 'где вы находитесь?' } });
+      expect(response.statusCode).toBe(200);
+      expect(bookingApplyService.calls).toEqual([]);
+      expect(response.json().debug.resolved_turn_context).toMatchObject({
+        resolved_service_interest: null,
+        service_interest_source: 'none',
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('persists booking service memory and asks for datetime', async () => {
+    const repository = new FakeRuntimeTurnRepository();
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'booking',
+      requested_action: 'ask_slot',
+      slot_updates: { service_interest: 'чистка зубов' },
+      reply_draft: 'Подскажите дату.',
+    }));
+    const bookingApplyService = new FakeBookingApplyService(awaitingConfirmationResponse());
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, { runtimeTurnService: new RuntimeTurnService(repository, aiClient, bookingApplyService, fixedClock) });
+
+    try {
+      const response = await app.inject({ method: 'POST', url: '/runtime/turn', payload: { ...validPayload, text: 'хочу записаться на чистку' } });
+      const body = response.json();
+      expect(response.statusCode).toBe(200);
+      expect(bookingApplyService.calls).toEqual([]);
+      expect(body.debug.policy_decision.reason).toBe('booking_interest_missing_datetime');
+      expect(body.debug.case_memory_after.cases[0].collected.service_interest).toMatchObject({ value: 'чистка зубов', source: 'booking_turn' });
+      expect(body.debug.case_memory_after.cases[0].last_assistant_question).toMatchObject({ slot: 'preferred_datetime', topic: 'booking' });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('mirrors proposed slots into case_memory.proposed_slots', async () => {
+    const repository = new FakeRuntimeTurnRepository();
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'availability_request',
+      requested_action: 'check_availability',
+      availability_query: availabilityQuery({ search_type: 'specific_date', date_iso: '2026-05-20', flexibility: 'specific' }),
+      slot_updates: { service_interest: 'консультация' },
+      booking: { preferred_date_iso: '2026-05-20', time_of_day: 'any' },
+    }));
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, { runtimeTurnService: new RuntimeTurnService(repository, aiClient, new FakeBookingApplyService(awaitingSlotChoiceResponse()), fixedClock) });
+
+    try {
+      const response = await app.inject({ method: 'POST', url: '/runtime/turn', payload: validPayload });
+      const body = response.json();
+      expect(response.statusCode).toBe(200);
+      expect(body.debug.case_memory_after.cases[0].proposed_slots).toHaveLength(3);
+      expect(body.debug.case_memory_after.cases[0].status).toBe('awaiting_slot_choice');
+      expect(repository.calls.savedState?.state.runtime.case_memory.cases[0].proposed_slots).toHaveLength(3);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('mirrors pending price clarification into last_assistant_question', async () => {
+    const repository = new FakeRuntimeTurnRepository();
+    const aiClient = new FakeRuntimeAIClient(validAIOutput({
+      conversation_intent: 'faq',
+      requested_action: 'answer_faq',
+      faq_topic: 'price',
+    }));
+    const app = Fastify();
+    await app.register(registerRuntimeRoutes, { runtimeTurnService: new RuntimeTurnService(repository, aiClient, new FakeBookingApplyService(noBookingResponse()), fixedClock) });
+
+    try {
+      const response = await app.inject({ method: 'POST', url: '/runtime/turn', payload: { ...validPayload, text: 'а цена какая?' } });
+      expect(response.statusCode).toBe(200);
+      expect(response.json().debug.case_memory_after.cases[0].last_assistant_question).toMatchObject({
+        purpose: 'collect_missing_slot',
+        slot: 'service_interest',
+        topic: 'price',
+        asked_at: '2026-05-17T12:00:00.000Z',
+        trace_id: expect.any(String),
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
   it('keeps pending price clarification and asks service again when no service_interest is extracted', async () => {
     const repository = new FakeRuntimeTurnRepository({ state: pendingPriceFaqState() });
     const aiClient = new FakeRuntimeAIClient(validAIOutput({
@@ -605,7 +833,10 @@ describe('runtime routes', () => {
       });
       expect(response.json().reply_text).not.toBe('Подскажите, пожалуйста, какая именно услуга интересует — сориентирую по стоимости.');
       expect(bookingApplyService.calls).toEqual([]);
-      expect(repository.calls.savedState).toBeUndefined();
+      expect(repository.calls.savedState?.state.runtime.case_memory.cases[0].collected.service_interest).toMatchObject({
+        value: 'чистка',
+        source: 'ai',
+      });
     } finally {
       await app.close();
     }
@@ -3941,7 +4172,11 @@ interface FakeRuntimeTurnRepositoryOptions {
 }
 
 class FakeRuntimeTurnRepository implements RuntimeTurnRepository {
-  constructor(private readonly options: FakeRuntimeTurnRepositoryOptions = {}) {}
+  private currentState: Record<string, unknown>;
+
+  constructor(private readonly options: FakeRuntimeTurnRepositoryOptions = {}) {
+    this.currentState = options.state ?? {};
+  }
 
   readonly mutationCalls: string[] = [];
 
@@ -4045,13 +4280,14 @@ class FakeRuntimeTurnRepository implements RuntimeTurnRepository {
     return {
       clinicId: input.clinicId,
       contactId: input.contactId,
-      state: this.options.state ?? {},
+      state: this.currentState,
       stateVersion: 1,
     };
   }
 
   async saveConvoState(input: SaveRuntimeStateInput) {
     this.calls.savedState = input;
+    this.currentState = input.state;
     this.mutationCalls.push('saveConvoState');
 
     return {
@@ -4231,6 +4467,34 @@ function pendingPriceFaqState(): Record<string, unknown> {
   };
 }
 
+
+function caseMemoryState(serviceInterest: string): Record<string, unknown> {
+  return {
+    runtime: {
+      case_memory: {
+        current_case_id: 'local_current',
+        cases: [{
+          id: 'local_current',
+          type: 'mixed',
+          status: 'answered',
+          collected: {
+            service_interest: {
+              value: serviceInterest,
+              source: 'faq_price_followup',
+              updated_at: '2026-05-16T10:00:00.000Z',
+              trace_id: '99999999-9999-4999-9999-999999999999',
+            },
+          },
+          proposed_slots: [],
+          active_hold: null,
+          last_intent: 'faq',
+          updated_at: '2026-05-16T10:00:00.000Z',
+        }],
+      },
+    },
+  };
+}
+
 function proposedSlotsState(options: { ambiguousTime?: boolean } = {}): Record<string, unknown> {
   const slots = awaitingSlotChoiceResponse().proposed_slots.map((slot) => ({
     option_id: slot.option_id,
@@ -4387,17 +4651,22 @@ class ThrowingRuntimeKnowledgeReplyComposer implements RuntimeKnowledgeReplyComp
 }
 
 class FakeRuntimeAIClient implements RuntimeAIClient {
+  private readonly outputs: unknown[];
+
   constructor(
-    private readonly output: unknown,
+    output: unknown | unknown[],
     readonly provider?: string,
     readonly model?: string,
-  ) {}
+  ) {
+    this.outputs = Array.isArray(output) ? [...output] : [output];
+  }
 
   readonly calls: RuntimeAIExtractionInput[] = [];
 
   async extract(input: RuntimeAIExtractionInput): Promise<RuntimeAIOutput> {
     this.calls.push(input);
-    return this.output as RuntimeAIOutput;
+    const output = this.outputs.length > 1 ? this.outputs.shift() : this.outputs[0];
+    return output as RuntimeAIOutput;
   }
 }
 
