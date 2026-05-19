@@ -457,8 +457,8 @@ export class RuntimeTurnService {
       debug.ai_output = aiOutput;
       debug.date_normalization = normalizationResult.debug;
 
-      const pendingPriceNeedsService = false;
-      const newPriceNeedsService = false;
+      const pendingPriceNeedsService = pendingClarification !== null && initialServiceInterest === null;
+      const newPriceNeedsService = pendingClarification === null && isPriceFaqMissingService(aiOutput);
 
       if (pendingPriceNeedsService) {
         const policyDecision: RuntimePolicyDecision = {
