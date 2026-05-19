@@ -46,7 +46,7 @@ export const runtimeAvailabilityTimeWindowTypeValues = ['morning', 'afternoon', 
 export const runtimeAvailabilityFlexibilityValues = ['specific', 'flexible', 'nearest', 'unknown'] as const;
 export const runtimeConfidenceValues = ['high', 'medium', 'low'] as const;
 export const runtimeSlotSelectionConfidenceValues = ['high', 'medium', 'low', 'unknown'] as const;
-export const runtimeFaqTopicValues = ['price', 'insurance', 'address', 'other', 'unknown'] as const;
+export const runtimeFaqTopicValues = ['price', 'address', 'insurance', 'services', 'contacts', 'hours', 'other', 'unknown'] as const;
 export const runtimePatientScopeValues = ['self', 'another_person', 'multiple_people', 'unknown'] as const;
 
 const runtimeAvailabilityTimeWindowSchema = z.object({

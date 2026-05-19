@@ -102,7 +102,7 @@ export function buildRuntimePrompt(input: BuildRuntimePromptInput): RuntimePromp
           patient_rejected_proposed_slot: 'boolean',
           selected_hold_id: 'string|null',
         },
-        faq_topic: 'price|insurance|address|other|unknown',
+        faq_topic: 'price|address|insurance|services|contacts|hours|other|unknown',
         patient_scope: 'self|another_person|multiple_people|unknown',
         handoff_recommended: 'boolean',
         kb_used: 'boolean',

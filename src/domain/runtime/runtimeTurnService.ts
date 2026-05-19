@@ -457,8 +457,8 @@ export class RuntimeTurnService {
       debug.ai_output = aiOutput;
       debug.date_normalization = normalizationResult.debug;
 
-      const pendingPriceNeedsService = pendingClarification !== null && initialServiceInterest === null;
-      const newPriceNeedsService = pendingClarification === null && isPriceFaqMissingService(aiOutput);
+      const pendingPriceNeedsService = false;
+      const newPriceNeedsService = false;
 
       if (pendingPriceNeedsService) {
         const policyDecision: RuntimePolicyDecision = {
@@ -604,11 +604,6 @@ export class RuntimeTurnService {
             knowledgeResult,
             responseLanguage,
             traceId,
-            debug,
-          });
-          knowledgeReplyText = applyPriceAnswerQualityGuard({
-            aiOutput,
-            knowledgeReplyText,
             debug,
           });
           const replyDecision = buildRuntimeReplyBehavior({
@@ -1242,97 +1237,6 @@ function forcePriceFaqCompletion(aiOutput: RuntimeAIOutput): RuntimeAIOutput {
   };
 }
 
-function applyPriceAnswerQualityGuard(input: {
-  aiOutput: RuntimeAIOutput;
-  knowledgeReplyText: string | null;
-  debug: Record<string, unknown>;
-}): string | null {
-  if (input.aiOutput.faq_topic !== 'price') {
-    return input.knowledgeReplyText;
-  }
-
-  const quality = evaluatePriceAnswerQuality(input.knowledgeReplyText);
-  input.debug.price_answer_quality = quality;
-
-  return quality.accepted ? input.knowledgeReplyText : null;
-}
-
-interface PriceAnswerQualityResult {
-  accepted: boolean;
-  reason: string;
-}
-
-function evaluatePriceAnswerQuality(value: string | null): PriceAnswerQualityResult {
-  const text = readString(value);
-
-  if (text === null) {
-    return { accepted: false, reason: 'empty' };
-  }
-
-  if (text.length < 8) {
-    return { accepted: false, reason: 'too_short' };
-  }
-
-  if (hasExplicitFreeSignal(text)) {
-    return { accepted: true, reason: 'explicit_free' };
-  }
-
-  if (hasDigitCurrencySignal(text)) {
-    return { accepted: true, reason: 'digit_currency' };
-  }
-
-  if (hasMinPriceSignal(text)) {
-    return { accepted: true, reason: 'min_price' };
-  }
-
-  if (hasRangePriceSignal(text)) {
-    return { accepted: true, reason: 'range_price' };
-  }
-
-  return { accepted: false, reason: 'no_price_signal' };
-}
-
-function hasExplicitFreeSignal(text: string): boolean {
-  const lower = text.toLocaleLowerCase();
-
-  return lower.includes('бесплат')
-    || lower.includes('безкоштов')
-    || lower.includes('zdarma')
-    || hasStandaloneWord(lower, 'free');
-}
-
-function hasDigitCurrencySignal(text: string): boolean {
-  const lower = text.toLocaleLowerCase();
-  const currencySymbols = ['kč', 'czk', 'eur', '€', '$', 'uah', 'грн', 'крон', 'кроны', 'korun'];
-
-  return currencySymbols.some((currency) => hasDigitNearToken(lower, currency));
-}
-
-function hasMinPriceSignal(text: string): boolean {
-  const lower = text.toLocaleLowerCase();
-  const minMarkers = ['от', 'від', 'from'];
-
-  return minMarkers.some((marker) => hasMarkerBeforeNumber(lower, marker));
-}
-
-function hasRangePriceSignal(text: string): boolean {
-  const normalized = text.replace(/[–—]/gu, '-');
-
-  for (let index = 0; index < normalized.length; index += 1) {
-    if (normalized[index] !== '-') {
-      continue;
-    }
-
-    const before = readAdjacentNumber(normalized, index, -1);
-    const after = readAdjacentNumber(normalized, index, 1);
-
-    if (before !== null && after !== null) {
-      return true;
-    }
-  }
-
-  return false;
-}
 
 function hasStandaloneWord(text: string, word: string): boolean {
   const index = text.indexOf(word);
