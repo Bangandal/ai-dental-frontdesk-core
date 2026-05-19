@@ -7,7 +7,7 @@ AI Desk / AI Front Desk for clinics.
 ## Architecture rules
 
 - n8n is transport only.
-- Backend owns runtime decisions and execution.
+- Backend owns runtime orchestration, state, deterministic tool execution, and side-effect boundaries.
 - Supabase/Postgres is source of truth.
 - OpenAI is semantic perception.
 - Google Sheets is calendar provider.
